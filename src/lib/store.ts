@@ -5,7 +5,7 @@ import { audioBufferToChannels, channelsToAudioBuffer } from "./audio/wav";
 import { firstOnsetOffset } from "./audio/align";
 import { decodeArrayBuffer, decodeFile, getAudioContext, toMono } from "./engine/context";
 import { Engine, type EngineDecks } from "./engine/engine";
-import { runAnalysis, runQuickStems } from "./workers";
+import { runAnalysis, runQuickStems, runSections } from "./workers";
 import { CLIP_LANES, emptyAutomation, type AutomationPoint, type Clip, type CuePoint, type DeckId, type DeckState, type Foundation, type LoopRegion, type Project, type StemKey, type TransportOptions } from "./types";
 import { playWindow } from "./engine/engine";
 import { computeSuggestions, type Suggestion, type SuggestionAction } from "./advisor";
@@ -233,9 +233,30 @@ export const useStore = create<Store>((set, get) => {
   const setDeck = (deckId: DeckId, patch: Partial<DeckState>) =>
     set((s) => ({ decks: { ...s.decks, [deckId]: { ...s.decks[deckId], ...patch } } }));
 
+  /** Recompute section labels for a deck's current grid (runs in a worker, updates when done). */
+  const refreshSections = async (deckId: DeckId) => {
+    const d = get().decks[deckId];
+    const a = d.analysis;
+    const full = d.buffers.full;
+    if (!a || !full) return;
+    const stamp = `${a.bpm}:${a.firstDownbeat}`;
+    try {
+      const sections = await runSections(toMono(full), full.sampleRate, { firstDownbeat: a.firstDownbeat, beatInterval: a.beatInterval, totalBars: a.totalBars });
+      const cur = get().decks[deckId].analysis;
+      if (!cur || `${cur.bpm}:${cur.firstDownbeat}` !== stamp) return; // grid changed again meanwhile
+      const next = { ...cur, sections };
+      setDeck(deckId, { analysis: next });
+      const songId = get().decks[deckId].songId;
+      if (songId) void persistSong(songId, { analysis: next });
+    } catch (err) {
+      console.warn("Section detection failed", err);
+    }
+  };
+
   const applyAnalysis = (deckId: DeckId, analysis: SongAnalysis) => {
     engine.invalidateDeck(deckId);
-    setDeck(deckId, { analysis, selection: null });
+    setDeck(deckId, { analysis: { ...analysis, sections: undefined }, selection: null });
+    void refreshSections(deckId);
     const songId = get().decks[deckId].songId;
     if (songId) void persistSong(songId, { analysis, bpm: analysis.bpm, keyName: analysis.key.name, camelot: analysis.key.camelot });
     const s = get();
@@ -457,6 +478,7 @@ export const useStore = create<Store>((set, get) => {
     }
     refreshSuggestions();
     void get().refreshLibrary();
+    if (!song.analysis.sections) void refreshSections(deckId); // older library records
     // Restore stems in the background
     if (song.stemSource === "ai" && song.aiStems.length > 0) {
       setDeck(deckId, { stemBusy: true, stemProgress: "Loading saved stems" });

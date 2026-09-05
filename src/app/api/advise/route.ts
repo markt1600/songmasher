@@ -17,6 +17,7 @@ const SongSchema = z.object({
   totalBars: z.number(),
   stems: z.array(z.string()),
   phrases: z.array(z.object({ bar: z.number(), energy: z.number(), beat: z.number(), vocal: z.number() })).max(400),
+  sections: z.array(z.object({ label: z.string(), startBar: z.number(), endBar: z.number() })).max(80).optional(),
   hooks: z.array(Window).max(5),
   quietVocals: z.array(Window).max(5),
   instrumentalGrooves: z.array(Window).max(5),
@@ -72,6 +73,9 @@ analysis of two songs and must return one concrete arrangement that a producer w
 - bpm, key with Camelot code, totalBars, and which stems exist.
 - phrases: one row per 4-bar phrase with energy (loudness), beat (percussive strength) and vocal (lead
   vocal / melody presence), all 0..1.
+- sections: the detected song structure (Intro / Verse / Chorus / Bridge / Break / Outro) as 0-based bar ranges
+  (endBar exclusive). Choruses are the natural hooks; verses and breaks make good breakdowns; intros make
+  poor foundations. Use these ranges directly when they exist.
 - hooks: best 8-bar windows for a vocal hook (loud + vocal). quietVocals: sparse vocal passages.
   instrumentalGrooves: 8-bar windows with a strong beat and little vocal. Prefer these precomputed windows;
   they are aligned to phrase boundaries.

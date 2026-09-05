@@ -1,4 +1,4 @@
-import { analyzeSong } from "@/lib/audio/analysis";
+import { analyzeSong, sectionsForGrid } from "@/lib/audio/analysis";
 
 interface WorkerScope {
   onmessage: ((e: MessageEvent) => void) | null;
@@ -6,15 +6,20 @@ interface WorkerScope {
 }
 const ctx = self as unknown as WorkerScope;
 
-export interface AnalysisRequest {
-  type: "analyze";
-  id: string;
-  mono: Float32Array;
-  sampleRate: number;
-}
+export type AnalysisRequest =
+  | { type: "analyze"; id: string; mono: Float32Array; sampleRate: number }
+  | { type: "sections"; id: string; mono: Float32Array; sampleRate: number; grid: { firstDownbeat: number; beatInterval: number; totalBars: number } };
 
 ctx.onmessage = (e: MessageEvent<AnalysisRequest>) => {
   const { id, mono, sampleRate } = e.data;
+  if (e.data.type === "sections") {
+    try {
+      ctx.postMessage({ type: "result", id, sections: sectionsForGrid(mono, sampleRate, e.data.grid) });
+    } catch (err) {
+      ctx.postMessage({ type: "error", id, message: (err as Error).message });
+    }
+    return;
+  }
   try {
     const result = analyzeSong(mono, sampleRate, (p) => {
       ctx.postMessage({ type: "progress", id, ...p });

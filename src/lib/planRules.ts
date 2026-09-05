@@ -146,8 +146,10 @@ export function describeSong(a: SongAnalysis) {
     }
     phrases.push({ bar: b, energy: r2(e / n), beat: r2(o / n), vocal: r2(v / n) });
   }
+  const sections = (a.sections ?? []).map((s) => ({ label: s.label, startBar: s.startBar, endBar: s.endBar }));
   return {
     phrases,
+    sections,
     hooks: topWindows(a, 8, (b) => a.barVocal[b] * 0.6 + a.barEnergy[b] * 0.4).map((w) => ({ bar: w.bar, score: r2(w.value) })),
     quietVocals: topWindows(a, 8, (b) => a.barVocal[b] * 0.8 - a.barEnergy[b] * 0.5).map((w) => ({ bar: w.bar, score: r2(w.value) })),
     instrumentalGrooves: topWindows(a, 8, (b) => a.barOnset[b] * 0.7 + a.barEnergy[b] * 0.3 - a.barVocal[b] * 0.6).map((w) => ({ bar: w.bar, score: r2(w.value) })),

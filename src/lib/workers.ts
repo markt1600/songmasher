@@ -1,4 +1,5 @@
 import type { SongAnalysis, AnalysisProgress } from "./audio/analysis";
+import type { Section } from "./audio/sections";
 
 let seq = 0;
 const nextId = () => `job${++seq}`;
@@ -88,5 +89,28 @@ export function runQuickStems(
       reject(new Error(e.message || "dsp worker failed"));
     };
     worker.postMessage({ type: "quickStems", id, channels, sampleRate }, channels.map((c) => c.buffer));
+  });
+}
+
+export function runSections(mono: Float32Array, sampleRate: number, grid: { firstDownbeat: number; beatInterval: number; totalBars: number }): Promise<Section[]> {
+  return new Promise((resolve, reject) => {
+    const worker = new Worker(new URL("../workers/analysis.worker.ts", import.meta.url));
+    const id = nextId();
+    worker.onmessage = (e) => {
+      const msg = e.data;
+      if (msg.id !== id) return;
+      if (msg.type === "result") {
+        worker.terminate();
+        resolve(msg.sections as Section[]);
+      } else if (msg.type === "error") {
+        worker.terminate();
+        reject(new Error(msg.message));
+      }
+    };
+    worker.onerror = (e) => {
+      worker.terminate();
+      reject(new Error(e.message || "sections worker failed"));
+    };
+    worker.postMessage({ type: "sections", id, mono, sampleRate, grid }, [mono.buffer]);
   });
 }

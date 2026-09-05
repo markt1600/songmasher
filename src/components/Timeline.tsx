@@ -80,6 +80,20 @@ export default function Timeline() {
   }, [register, zoom, setFoundation, addClip]);
 
   useEffect(() => {
+    const el = scrollRef.current;
+    if (!el) return;
+    const handler = (e: WheelEvent) => {
+      if (e.ctrlKey || e.metaKey) {
+        e.preventDefault();
+        const z = useStore.getState().zoom;
+        useStore.getState().setZoom(z * (e.deltaY < 0 ? 1.12 : 0.89));
+      }
+    };
+    el.addEventListener("wheel", handler, { passive: false });
+    return () => el.removeEventListener("wheel", handler);
+  }, []);
+
+  useEffect(() => {
     const playheadRef = scrollRef.current?.querySelector<HTMLDivElement>("[data-playhead]");
     let raf = 0;
     const tick = () => {
@@ -195,17 +209,7 @@ export default function Timeline() {
         </button>
       </div>
 
-      <div
-        ref={scrollRef}
-        className="overflow-x-auto overflow-y-hidden relative"
-        style={{ scrollbarGutter: "stable" }}
-        onWheel={(e) => {
-          if (e.ctrlKey || e.metaKey) {
-            e.preventDefault();
-            setZoom(zoom * (e.deltaY < 0 ? 1.12 : 0.89));
-          }
-        }}
-      >
+      <div ref={scrollRef} className="overflow-x-auto overflow-y-hidden relative" style={{ scrollbarGutter: "stable" }}>
         <div className="relative" style={{ width: width + HEADER_W + 40, height: RULER_H + LANES_HEIGHT }} onPointerDown={(e) => e.target === e.currentTarget && selectClip(null)}>
           {/* Lane headers */}
           <div className="absolute left-0 top-0 bottom-0 z-10 bg-[#101015]/95 backdrop-blur border-r border-white/[0.08]" style={{ width: HEADER_W }}>

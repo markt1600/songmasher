@@ -1,5 +1,6 @@
 import { FFT, hannWindow } from "./fft";
 import { camelotOf, keyName, type KeyInfo, type Mode } from "./music";
+import { detectSections, type Section } from "./sections";
 
 export interface SongAnalysis {
   duration: number; // seconds
@@ -19,6 +20,8 @@ export interface SongAnalysis {
   /** Estimated vocal presence per bar (mid-band centre energy), normalised 0..1 */
   barVocal: Float32Array;
   totalBars: number;
+  /** Structural sections (intro / verse / chorus ...), on the same bar grid */
+  sections?: Section[];
 }
 
 export const PEAK_BUCKETS = 2400;
@@ -372,6 +375,8 @@ export function analyzeSong(
   normalise(barEnergy);
   normalise(barOnset);
   normalise(barVocal);
+  onProgress?.({ stage: "sections", value: 0.93 });
+  const sections = detectSections(mono, sr, { firstDownbeat, beatInterval, totalBars });
   onProgress?.({ stage: "done", value: 1 });
 
   return {
@@ -387,7 +392,14 @@ export function analyzeSong(
     barOnset,
     barVocal,
     totalBars,
+    sections,
   };
+}
+
+/** Re-run only the structural segmentation for an existing grid (after the user corrects tempo / downbeat). */
+export function sectionsForGrid(monoIn: Float32Array, sampleRateIn: number, grid: { firstDownbeat: number; beatInterval: number; totalBars: number }): Section[] {
+  const { data: mono, sr } = downsample(monoIn, sampleRateIn);
+  return detectSections(mono, sr, grid);
 }
 
 function detectKey(chroma: Float32Array): KeyInfo {
