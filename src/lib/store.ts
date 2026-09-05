@@ -8,6 +8,8 @@ import { Engine, type EngineDecks } from "./engine/engine";
 import { runAnalysis, runQuickStems } from "./workers";
 import { CLIP_LANES, type Clip, type DeckId, type DeckState, type Foundation, type Project, type StemKey } from "./types";
 import { computeSuggestions, type Suggestion, type SuggestionAction } from "./advisor";
+import * as lib from "./library";
+import type { LibrarySong } from "./library";
 
 export const engine = new Engine();
 
@@ -17,6 +19,7 @@ const newId = () => `c${Date.now().toString(36)}${(idSeq++).toString(36)}`;
 function emptyDeck(id: DeckId): DeckState {
   return {
     id,
+    songId: null,
     name: "",
     file: null,
     status: "empty",
@@ -106,8 +109,15 @@ interface Store {
   claudeError: string | null;
   toast: string | null;
   stemsCode: string;
+  library: LibrarySong[];
+  libraryBusy: { name: string; label: string; value: number } | null;
+  storage: { usage: number; quota: number } | null;
 
   loadConfig: () => Promise<void>;
+  refreshLibrary: () => Promise<void>;
+  importFiles: (files: File[]) => Promise<void>;
+  loadFromLibrary: (deckId: DeckId, id: string) => Promise<void>;
+  deleteFromLibrary: (id: string) => Promise<void>;
   loadFile: (deckId: DeckId, file: File) => Promise<void>;
   clearDeck: (deckId: DeckId) => void;
   setMasterBpm: (bpm: number) => void;
@@ -185,6 +195,8 @@ export const useStore = create<Store>((set, get) => {
   const applyAnalysis = (deckId: DeckId, analysis: SongAnalysis) => {
     engine.invalidateDeck(deckId);
     setDeck(deckId, { analysis, selection: null });
+    const songId = get().decks[deckId].songId;
+    if (songId) void lib.updateSong(songId, { analysis, bpm: analysis.bpm, keyName: analysis.key.name, camelot: analysis.key.camelot });
     const s = get();
     if (s.project.foundation?.deckId === deckId) {
       set({ project: { ...s.project, masterBpm: analysis.bpm } });
@@ -192,6 +204,136 @@ export const useStore = create<Store>((set, get) => {
     }
     refreshSuggestions();
     void restartIfPlaying();
+  };
+
+  const PROGRESS_LABELS: Record<string, string> = {
+    waveform: "Drawing waveform",
+    spectrum: "Listening to the spectrum",
+    tempo: "Finding the tempo",
+    beats: "Locking the beat grid",
+    key: "Detecting the key",
+    done: "Ready",
+  };
+
+  /** Returns the library record for a file, analysing and storing it on first sight. */
+  const ensureInLibrary = async (file: File, onProgress: (label: string, value: number) => void): Promise<LibrarySong> => {
+    const data = await file.arrayBuffer();
+    const id = await lib.hashFile(data, file);
+    const existing = await lib.getSong(id);
+    if (existing) {
+      await lib.updateSong(id, { lastUsedAt: Date.now() });
+      return existing;
+    }
+    onProgress("Decoding audio", 0.02);
+    const buffer = await decodeArrayBuffer(data);
+    onProgress("Listening for the beat", 0.05);
+    const analysis = await runAnalysis(toMono(buffer), buffer.sampleRate, (p) => onProgress(PROGRESS_LABELS[p.stage] ?? p.stage, p.value));
+    const song: LibrarySong = {
+      id,
+      name: file.name.replace(/\.[^.]+$/, ""),
+      fileName: file.name,
+      mimeType: file.type || "audio/mpeg",
+      size: file.size,
+      addedAt: Date.now(),
+      lastUsedAt: Date.now(),
+      duration: buffer.duration,
+      bpm: analysis.bpm,
+      keyName: analysis.key.name,
+      camelot: analysis.key.camelot,
+      analysis,
+      semitones: 0,
+      stemSource: "none",
+      aiStems: [],
+    };
+    try {
+      await lib.putFile(`${id}:full`, new Blob([data], { type: song.mimeType }));
+      await lib.putSong(song);
+      void lib.requestPersistence();
+    } catch (err) {
+      console.warn("Library save failed", err);
+    }
+    return song;
+  };
+
+  const buildAiBuffers = (full: AudioBuffer, decoded: Partial<Record<lib.AiStemKey, AudioBuffer>>): Partial<Record<StemKey, AudioBuffer>> => {
+    const ctx = getAudioContext();
+    const mix = (keys: lib.AiStemKey[]): AudioBuffer | undefined => {
+      const parts = keys.map((k) => decoded[k]).filter((b): b is AudioBuffer => !!b);
+      if (parts.length === 0) return undefined;
+      const len = Math.max(...parts.map((p) => p.length));
+      const chans = Math.max(...parts.map((p) => p.numberOfChannels));
+      const out = ctx.createBuffer(chans, len, parts[0].sampleRate);
+      for (let c = 0; c < chans; c++) {
+        const dst = out.getChannelData(c);
+        for (const p of parts) {
+          const src = p.getChannelData(Math.min(c, p.numberOfChannels - 1));
+          for (let i = 0; i < src.length; i++) dst[i] += src[i];
+        }
+      }
+      return out;
+    };
+    return {
+      full,
+      vocals: decoded.vocals,
+      instrumental: mix(["drums", "bass", "other"]),
+      drums: decoded.drums,
+      melodic: mix(["bass", "other"]),
+    };
+  };
+
+  /** Decode a library song (and its stored stems) into a deck. */
+  const loadSongIntoDeck = async (deckId: DeckId, song: LibrarySong, file: File) => {
+    engine.stop();
+    set({ playing: false, previewDeck: null });
+    engine.invalidateDeck(deckId);
+    set((s) => ({
+      decks: { ...s.decks, [deckId]: { ...emptyDeck(deckId), songId: song.id, name: song.name, file, status: "decoding", progressLabel: "Decoding audio", progress: 0.3 } },
+    }));
+    const buffer = await decodeFile(file);
+    setDeck(deckId, {
+      buffers: { full: buffer },
+      duration: buffer.duration,
+      sampleRate: buffer.sampleRate,
+      analysis: song.analysis,
+      semitones: song.semitones,
+      status: "ready",
+      progress: 1,
+      progressLabel: "",
+    });
+    const s = get();
+    if (!s.project.foundation) {
+      set({
+        project: {
+          ...s.project,
+          masterBpm: song.analysis.bpm,
+          foundation: { deckId, stem: "full", startBar: 0, gain: 1 },
+          lengthBars: Math.max(8, Math.min(s.project.lengthBars, song.analysis.totalBars)),
+        },
+      });
+      engine.invalidateAll();
+    }
+    refreshSuggestions();
+    void get().refreshLibrary();
+    // Restore stems in the background
+    if (song.stemSource === "ai" && song.aiStems.length > 0) {
+      setDeck(deckId, { stemBusy: true, stemProgress: "Loading saved stems" });
+      try {
+        const decoded: Partial<Record<lib.AiStemKey, AudioBuffer>> = {};
+        await Promise.all(
+          song.aiStems.map(async (k) => {
+            const blob = await lib.getFile(`${song.id}:${k}`);
+            if (blob) decoded[k] = await decodeArrayBuffer(await blob.arrayBuffer());
+          }),
+        );
+        if (get().decks[deckId].songId !== song.id) return; // deck changed meanwhile
+        engine.invalidateDeck(deckId);
+        setDeck(deckId, { buffers: buildAiBuffers(buffer, decoded), stemSource: "ai", stemBusy: false, stemProgress: "" });
+      } catch {
+        setDeck(deckId, { stemBusy: false, stemProgress: "" });
+      }
+    } else if (song.stemSource === "quick") {
+      void get().separateQuick(deckId);
+    }
   };
 
   const storeImpl = {
@@ -209,6 +351,9 @@ export const useStore = create<Store>((set, get) => {
     claudeError: null,
     toast: null,
     stemsCode: "",
+    library: [],
+    libraryBusy: null,
+    storage: null,
 
     showToast: (msg: string) => {
       set({ toast: msg });
@@ -233,49 +378,55 @@ export const useStore = create<Store>((set, get) => {
       }
     },
 
+    refreshLibrary: async () => {
+      const [library, storage] = await Promise.all([lib.listSongs(), lib.storageEstimate()]);
+      set({ library, storage });
+    },
+
+    importFiles: async (files) => {
+      for (const file of files) {
+        const s = get();
+        const target = (["A", "B"] as DeckId[]).find((id) => s.decks[id].status === "empty");
+        if (target) await get().loadFile(target, file);
+        else {
+          set({ libraryBusy: { name: file.name, label: "Reading file", value: 0 } });
+          try {
+            await ensureInLibrary(file, (label, value) => set({ libraryBusy: { name: file.name, label, value } }));
+          } catch (err) {
+            get().showToast(`Could not add ${file.name}: ${(err as Error).message}`);
+          } finally {
+            set({ libraryBusy: null });
+          }
+        }
+      }
+      await get().refreshLibrary();
+    },
+
+    loadFromLibrary: async (deckId, id) => {
+      const [song, blob] = await Promise.all([lib.getSong(id), lib.getFile(`${id}:full`)]);
+      if (!song || !blob) {
+        get().showToast("That song is no longer in the library");
+        await get().refreshLibrary();
+        return;
+      }
+      const file = new File([blob], song.fileName, { type: song.mimeType });
+      await loadSongIntoDeck(deckId, song, file);
+    },
+
+    deleteFromLibrary: async (id) => {
+      await lib.deleteSong(id);
+      await get().refreshLibrary();
+    },
+
     loadFile: async (deckId, file) => {
       const name = file.name.replace(/\.[^.]+$/, "");
       set((s) => ({
-        decks: { ...s.decks, [deckId]: { ...emptyDeck(deckId), name, file, status: "decoding", progressLabel: "Decoding audio" } },
+        decks: { ...s.decks, [deckId]: { ...emptyDeck(deckId), name, file, status: "decoding", progressLabel: "Reading file" } },
       }));
       engine.invalidateDeck(deckId);
       try {
-        const buffer = await decodeFile(file);
-        setDeck(deckId, {
-          buffers: { full: buffer },
-          duration: buffer.duration,
-          sampleRate: buffer.sampleRate,
-          status: "analyzing",
-          progressLabel: "Listening for the beat",
-          progress: 0.05,
-        });
-        const mono = toMono(buffer);
-        const analysis = await runAnalysis(mono, buffer.sampleRate, (p) => {
-          const labels: Record<string, string> = {
-            waveform: "Drawing waveform",
-            spectrum: "Listening to the spectrum",
-            tempo: "Finding the tempo",
-            beats: "Locking the beat grid",
-            key: "Detecting the key",
-            done: "Ready",
-          };
-          setDeck(deckId, { progress: p.value, progressLabel: labels[p.stage] ?? p.stage });
-        });
-        setDeck(deckId, { analysis, status: "ready", progress: 1, progressLabel: "" });
-        const s = get();
-        // First loaded song becomes the foundation automatically.
-        if (!s.project.foundation) {
-          set({
-            project: {
-              ...s.project,
-              masterBpm: analysis.bpm,
-              foundation: { deckId, stem: "full", startBar: 0, gain: 1 },
-              lengthBars: Math.max(8, Math.min(s.project.lengthBars, analysis.totalBars)),
-            },
-          });
-          engine.invalidateAll();
-        }
-        refreshSuggestions();
+        const song = await ensureInLibrary(file, (label, value) => setDeck(deckId, { progressLabel: label, progress: value, status: value < 0.05 ? "decoding" : "analyzing" }));
+        await loadSongIntoDeck(deckId, song, file);
       } catch (err) {
         setDeck(deckId, { status: "error", error: (err as Error).message || "Could not decode this file" });
       }
@@ -360,6 +511,8 @@ export const useStore = create<Store>((set, get) => {
     setDeckPitch: (deckId, semitones) => {
       const v = Math.max(-12, Math.min(12, Math.round(semitones)));
       setDeck(deckId, { semitones: v });
+      const songId = get().decks[deckId].songId;
+      if (songId) void lib.updateSong(songId, { semitones: v });
       engine.invalidateDeck(deckId);
       refreshSuggestions();
       void restartIfPlaying();
@@ -457,6 +610,7 @@ export const useStore = create<Store>((set, get) => {
           stemBusy: false,
           stemProgress: "",
         });
+        if (d.songId && d.stemSource !== "ai") void lib.updateSong(d.songId, { stemSource: "quick" });
         get().showToast(`Quick stems ready for ${d.name}`);
         void restartIfPlaying();
       } catch (err) {
@@ -513,37 +667,31 @@ export const useStore = create<Store>((set, get) => {
         for (const k of ["vocals", "drums", "bass", "other"]) if (output[k]) want[k] = output[k];
         if (!want.vocals) throw new Error("No vocal stem returned");
         setDeck(deckId, { stemProgress: "Downloading stems" });
-        const decoded: Record<string, AudioBuffer> = {};
+        const decoded: Partial<Record<lib.AiStemKey, AudioBuffer>> = {};
+        const raw: Partial<Record<lib.AiStemKey, ArrayBuffer>> = {};
         await Promise.all(
-          Object.entries(want).map(async ([k, url]) => {
+          (Object.entries(want) as [lib.AiStemKey, string][]).map(async ([k, url]) => {
             const r = await fetch(`/api/stems/fetch?url=${encodeURIComponent(url)}`, { headers: { "x-stems-code": code } });
             if (!r.ok) throw new Error(`Could not download ${k}`);
-            decoded[k] = await decodeArrayBuffer(await r.arrayBuffer());
+            const bytes = await r.arrayBuffer();
+            raw[k] = bytes;
+            decoded[k] = await decodeArrayBuffer(bytes);
           }),
         );
-        const ctx = getAudioContext();
-        const mix = (keys: string[]): AudioBuffer | undefined => {
-          const parts = keys.map((k) => decoded[k]).filter(Boolean);
-          if (parts.length === 0) return undefined;
-          const len = Math.max(...parts.map((p) => p.length));
-          const chans = Math.max(...parts.map((p) => p.numberOfChannels));
-          const out = ctx.createBuffer(chans, len, parts[0].sampleRate);
-          for (let c = 0; c < chans; c++) {
-            const dst = out.getChannelData(c);
-            for (const p of parts) {
-              const src = p.getChannelData(Math.min(c, p.numberOfChannels - 1));
-              for (let i = 0; i < src.length; i++) dst[i] += src[i];
+        const buffers = buildAiBuffers(full, decoded);
+        if (d.songId) {
+          try {
+            const stored: lib.AiStemKey[] = [];
+            for (const [k, bytes] of Object.entries(raw) as [lib.AiStemKey, ArrayBuffer][]) {
+              await lib.putFile(`${d.songId}:${k}`, new Blob([bytes], { type: "audio/mpeg" }));
+              stored.push(k);
             }
+            await lib.updateSong(d.songId, { stemSource: "ai", aiStems: stored });
+            void get().refreshLibrary();
+          } catch (err) {
+            console.warn("Could not save stems to the library", err);
           }
-          return out;
-        };
-        const buffers: Partial<Record<StemKey, AudioBuffer>> = {
-          full,
-          vocals: decoded.vocals,
-          instrumental: mix(["drums", "bass", "other"]),
-          drums: decoded.drums,
-          melodic: mix(["bass", "other"]),
-        };
+        }
         engine.invalidateDeck(deckId);
         setDeck(deckId, { buffers, stemSource: "ai", stemBusy: false, stemProgress: "" });
         get().showToast(`AI stems ready for ${d.name}`);

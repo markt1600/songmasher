@@ -14,6 +14,8 @@ export const STEM_LABELS: Record<StemKey, string> = {
 
 export interface DeckState {
   id: DeckId;
+  /** library id (content hash) of the loaded song */
+  songId: string | null;
   name: string;
   file: File | null;
   status: "empty" | "decoding" | "analyzing" | "ready" | "error";

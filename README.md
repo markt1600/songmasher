@@ -6,6 +6,7 @@ Built with Next.js (App Router), TypeScript, Tailwind v4 and Zustand. Designed t
 
 ## What it does
 
+- **Library** – every song you add is analysed once and saved in the browser (IndexedDB) with its analysis, grid and pitch corrections, and any Demucs stems. Reloading a song is instant and never re-runs separation. Pick a saved song for deck A or B from the strip at the top, or add new files there.
 - **Analysis on load** – tempo (with an octave sanity check), beat grid and downbeat, musical key with Camelot code, and per-bar energy / rhythm / vocal-presence curves. Runs in a worker, ~1 s per song.
 - **Foundation + clips** – one song plays continuously from a bar you choose; bars from either song become clips on three lanes. Clips are dragged, resized and repeated (double-click or `D`), and everything snaps to beats.
 - **Beat alignment** – every clip and the foundation are time-stretched (WSOLA, pitch-preserving) to the master tempo and started on the exact bar boundary, so the beats line up.
@@ -50,7 +51,7 @@ npx tsx scripts/dsp-check.ts   # synthetic click tracks: verifies BPM, downbeat,
 
 ## How to make a mashup
 
-1. Load a song on each deck. The first one becomes the foundation automatically; the master tempo follows it.
+1. Add songs to the library (Add song, or drop files on it), then press A or B on a song to load it on a deck. Dropping a file straight onto a deck works too. The first loaded song becomes the foundation automatically; the master tempo follows it.
 2. Check the advisor. Apply the foundation, tempo and key suggestions you like, or set them manually (deck pitch stepper, master BPM field, "Use as foundation").
 3. On the other deck, drag across the waveform to select bars (a click selects a 4-bar phrase). **Audition** loops the selection at the master tempo. **Add to timeline** drops it as a clip after the last clip on lane 1.
 4. Select a clip to change its stem or level, repeat it, move it between lanes, or delete it. Drag to move, drag the right edge to resize. Hold `⌥` while dragging for quarter-beat positioning.
@@ -65,12 +66,14 @@ src/workers/        Web Workers that run the DSP off the main thread
 src/lib/engine/     Web Audio scheduling, tempo-matched buffer cache, offline render
 src/lib/store.ts    application state and all user actions
 src/lib/advisor.ts  local mashup heuristics
-src/components/     Header (transport), Deck, Waveform, Timeline, Advisor
+src/lib/library.ts  IndexedDB song library (files, analysis, stems)
+src/components/     Header (transport), Library, Deck, Waveform, Timeline, Advisor
 src/app/api/        config, advise (Claude), stems (Replicate), stems/upload (Vercel Blob), stems/fetch
 ```
 
 ## Notes and limits
 
+- The library lives in the browser you used, not on the server, so it does not follow you between devices, and clearing site data removes it. The app asks the browser for persistent storage so it is not evicted automatically.
 - Songs are held in memory as decoded audio. Two five-minute songs with AI stems use several hundred megabytes; a desktop browser is the intended environment.
 - Beat detection assumes a steady tempo. For live recordings or tempo changes, the grid controls let you correct the reading, but clips will drift over long stretches.
 - Quick stems rely on vocals being centre-panned, which is true for most modern mixes but not all.

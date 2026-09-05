@@ -138,9 +138,9 @@ export default function Deck({ id }: { id: DeckId }) {
             <Icon name="upload" size={18} />
           </div>
           <div className="text-[13px]">
-            <span className="text-text font-medium">Drop an MP3 here</span> <span className="text-muted">or click to browse</span>
+            <span className="text-text font-medium">Drop a song here</span> <span className="text-muted">or click to browse</span>
           </div>
-          <div className="text-[11px] text-muted/80">MP3, WAV, M4A, FLAC, OGG</div>
+          <div className="text-[11px] text-muted/80">MP3, WAV, M4A, FLAC, OGG · or press A / B on a song in the library</div>
           {deck.status === "error" && <div className="text-[12px] text-[#ff6b61] mt-1">{deck.error}</div>}
         </button>
       ) : deck.status !== "ready" || !a ? (

@@ -5,6 +5,7 @@ import Header from "./Header";
 import Deck from "./Deck";
 import Timeline from "./Timeline";
 import Advisor from "./Advisor";
+import Library from "./Library";
 import Toast from "./Toast";
 
 export default function Studio() {
@@ -50,11 +51,12 @@ export default function Studio() {
               Two songs in. One mashup out.
             </h1>
             <p className="text-text-2 mt-3 text-[14px] max-w-[560px] mx-auto leading-relaxed">
-              Drop a song on each deck. SongMasher finds the tempo, beat grid and key, then lets you pick a foundation, slice hooks
-              from the other song and lay them on a beat-locked timeline. Everything runs in your browser.
+              Add songs to your library, load one on each deck, and SongMasher finds the tempo, beat grid and key. Pick a foundation,
+              slice hooks from the other song and lay them on a beat-locked timeline. Everything runs in your browser.
             </p>
           </div>
         )}
+        <Library />
         <div className="grid lg:grid-cols-2 gap-4">
           <Deck id="A" />
           <Deck id="B" />

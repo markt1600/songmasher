@@ -1,0 +1,148 @@
+"use client";
+/**
+ * Song library persisted in IndexedDB. Stores the original file, the analysis (including
+ * any grid corrections), the per-song pitch preference and the raw Demucs stems, so a song
+ * can be reloaded instantly without re-analysing or re-separating it.
+ */
+import type { SongAnalysis } from "./audio/analysis";
+import type { StemSource } from "./types";
+
+export const AI_STEM_KEYS = ["vocals", "drums", "bass", "other"] as const;
+export type AiStemKey = (typeof AI_STEM_KEYS)[number];
+
+export interface LibrarySong {
+  id: string; // sha-256 of the file bytes
+  name: string;
+  fileName: string;
+  mimeType: string;
+  size: number;
+  addedAt: number;
+  lastUsedAt: number;
+  duration: number;
+  bpm: number;
+  keyName: string;
+  camelot: string;
+  analysis: SongAnalysis;
+  semitones: number;
+  stemSource: StemSource;
+  /** which AI stems are stored under files `${id}:${stem}` */
+  aiStems: AiStemKey[];
+}
+
+interface StoredFile {
+  id: string; // `${songId}:full` or `${songId}:${stem}`
+  blob: Blob;
+}
+
+const DB_NAME = "songmasher";
+const DB_VERSION = 1;
+
+function openDb(): Promise<IDBDatabase> {
+  return new Promise((resolve, reject) => {
+    if (typeof indexedDB === "undefined") return reject(new Error("IndexedDB unavailable"));
+    const req = indexedDB.open(DB_NAME, DB_VERSION);
+    req.onupgradeneeded = () => {
+      const db = req.result;
+      if (!db.objectStoreNames.contains("songs")) db.createObjectStore("songs", { keyPath: "id" });
+      if (!db.objectStoreNames.contains("files")) db.createObjectStore("files", { keyPath: "id" });
+    };
+    req.onsuccess = () => resolve(req.result);
+    req.onerror = () => reject(req.error ?? new Error("Could not open library"));
+  });
+}
+
+function tx<T>(store: "songs" | "files", mode: IDBTransactionMode, fn: (s: IDBObjectStore) => IDBRequest<T>): Promise<T> {
+  return openDb().then(
+    (db) =>
+      new Promise<T>((resolve, reject) => {
+        const t = db.transaction(store, mode);
+        const req = fn(t.objectStore(store));
+        req.onsuccess = () => resolve(req.result);
+        req.onerror = () => reject(req.error ?? new Error("Library operation failed"));
+        t.oncomplete = () => db.close();
+      }),
+  );
+}
+
+export async function hashFile(data: ArrayBuffer, fallback: File): Promise<string> {
+  try {
+    const digest = await crypto.subtle.digest("SHA-256", data);
+    return Array.from(new Uint8Array(digest))
+      .map((b) => b.toString(16).padStart(2, "0"))
+      .join("");
+  } catch {
+    return `${fallback.name}-${fallback.size}-${fallback.lastModified}`;
+  }
+}
+
+export async function listSongs(): Promise<LibrarySong[]> {
+  try {
+    const all = await tx<LibrarySong[]>("songs", "readonly", (s) => s.getAll());
+    return all.sort((a, b) => b.lastUsedAt - a.lastUsedAt);
+  } catch {
+    return [];
+  }
+}
+
+export async function getSong(id: string): Promise<LibrarySong | undefined> {
+  try {
+    return await tx<LibrarySong | undefined>("songs", "readonly", (s) => s.get(id));
+  } catch {
+    return undefined;
+  }
+}
+
+export async function putSong(song: LibrarySong): Promise<void> {
+  await tx("songs", "readwrite", (s) => s.put(song));
+}
+
+export async function updateSong(id: string, patch: Partial<LibrarySong>): Promise<void> {
+  const existing = await getSong(id);
+  if (!existing) return;
+  await putSong({ ...existing, ...patch });
+}
+
+export async function putFile(id: string, blob: Blob): Promise<void> {
+  await tx("files", "readwrite", (s) => s.put({ id, blob } satisfies StoredFile));
+}
+
+export async function getFile(id: string): Promise<Blob | undefined> {
+  try {
+    const rec = await tx<StoredFile | undefined>("files", "readonly", (s) => s.get(id));
+    return rec?.blob;
+  } catch {
+    return undefined;
+  }
+}
+
+export async function deleteSong(id: string): Promise<void> {
+  const song = await getSong(id);
+  await tx("songs", "readwrite", (s) => s.delete(id));
+  const ids = [`${id}:full`, ...(song?.aiStems ?? []).map((k) => `${id}:${k}`)];
+  for (const fid of ids) await tx("files", "readwrite", (s) => s.delete(fid));
+}
+
+/** Ask the browser not to evict the library under storage pressure. Best effort. */
+export async function requestPersistence(): Promise<void> {
+  try {
+    if (navigator.storage?.persist) await navigator.storage.persist();
+  } catch {
+    /* ignore */
+  }
+}
+
+export async function storageEstimate(): Promise<{ usage: number; quota: number } | null> {
+  try {
+    const e = await navigator.storage?.estimate?.();
+    if (!e) return null;
+    return { usage: e.usage ?? 0, quota: e.quota ?? 0 };
+  } catch {
+    return null;
+  }
+}
+
+export function formatBytes(n: number): string {
+  if (n < 1024 * 1024) return `${Math.round(n / 1024)} KB`;
+  if (n < 1024 * 1024 * 1024) return `${(n / 1024 / 1024).toFixed(1)} MB`;
+  return `${(n / 1024 / 1024 / 1024).toFixed(2)} GB`;
+}
