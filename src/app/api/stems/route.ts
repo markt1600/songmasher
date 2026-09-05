@@ -12,6 +12,25 @@ function client(): Replicate | null {
   return new Replicate({ auth });
 }
 
+let cachedVersion: { model: string; id: string; at: number } | null = null;
+
+/**
+ * Community models on Replicate must be run by version id. Unless DEMUCS_VERSION pins one,
+ * look up the model's latest version (cached for an hour).
+ */
+async function resolveVersion(replicate: Replicate): Promise<string> {
+  if (process.env.DEMUCS_VERSION) return process.env.DEMUCS_VERSION;
+  const model = process.env.DEMUCS_MODEL ?? "ryan5453/demucs";
+  if (cachedVersion && cachedVersion.model === model && Date.now() - cachedVersion.at < 3600_000) return cachedVersion.id;
+  const [owner, name] = model.split("/");
+  if (!owner || !name) throw new Error(`DEMUCS_MODEL must look like owner/name, got "${model}"`);
+  const info = await replicate.models.get(owner, name);
+  const id = info.latest_version?.id;
+  if (!id) throw new Error(`Model ${model} has no published version`);
+  cachedVersion = { model, id, at: Date.now() };
+  return id;
+}
+
 /** Start a Demucs separation for an already-uploaded audio URL. */
 export async function POST(request: Request): Promise<Response> {
   if (!stemsAuthorized(request.headers.get("x-stems-code"))) return Response.json({ error: "Invalid access code" }, { status: 401 });
@@ -34,10 +53,8 @@ export async function POST(request: Request): Promise<Response> {
     mp3_bitrate: 320,
   };
   try {
-    const version = process.env.DEMUCS_VERSION;
-    const prediction = version
-      ? await replicate.predictions.create({ version, input })
-      : await replicate.predictions.create({ model: process.env.DEMUCS_MODEL ?? "ryan5453/demucs", input });
+    const version = await resolveVersion(replicate);
+    const prediction = await replicate.predictions.create({ version, input });
     return Response.json({ id: prediction.id, status: prediction.status });
   } catch (err) {
     return Response.json({ error: `Replicate: ${(err as Error).message}` }, { status: 502 });
