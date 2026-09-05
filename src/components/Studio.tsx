@@ -12,6 +12,9 @@ import DragLayer from "./DragLayer";
 export default function Studio() {
   const loadConfig = useStore((s) => s.loadConfig);
   const decks = useStore((s) => s.decks);
+  const restorable = useStore((s) => s.restorable);
+  const restoreSession = useStore((s) => s.restoreSession);
+  const dismissRestore = useStore((s) => s.dismissRestore);
   useEffect(() => {
     void loadConfig();
   }, [loadConfig]);
@@ -22,7 +25,10 @@ export default function Studio() {
       if (t && (t.tagName === "INPUT" || t.tagName === "SELECT" || t.tagName === "TEXTAREA")) return;
       const s = useStore.getState();
       const mod = e.metaKey || e.ctrlKey;
-      if (mod && e.key.toLowerCase() === "z") {
+      if (mod && e.key.toLowerCase() === "s") {
+        e.preventDefault();
+        void s.saveProject();
+      } else if (mod && e.key.toLowerCase() === "z") {
         e.preventDefault();
         if (e.shiftKey) s.redo();
         else s.undo();
@@ -82,6 +88,21 @@ export default function Studio() {
               Add songs to your library, load one on each deck, and SongMasher finds the tempo, beat grid and key. Pick a foundation,
               slice hooks from the other song and lay them on a beat-locked timeline. Everything runs in your browser.
             </p>
+          </div>
+        )}
+        {restorable && empty && (
+          <div className="rounded-[12px] border border-[#7c6cff]/40 bg-[#7c6cff]/10 px-4 py-2.5 flex flex-wrap items-center gap-3 fade-in">
+            <span className="text-[13px]">
+              Pick up where you left off? <span className="text-text-2">{restorable.currentProject?.name ?? Object.values(restorable.songNames).filter(Boolean).join(" × ")}</span>
+              <span className="text-muted"> · {new Date(restorable.at).toLocaleString()}</span>
+            </span>
+            <div className="flex-1" />
+            <button className="btn btn-sm btn-primary" onClick={() => void restoreSession()}>
+              Restore
+            </button>
+            <button className="btn btn-sm btn-ghost" onClick={dismissRestore}>
+              Dismiss
+            </button>
           </div>
         )}
         <Library />

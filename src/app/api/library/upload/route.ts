@@ -19,7 +19,8 @@ export async function POST(request: Request): Promise<Response> {
           code = undefined;
         }
         if (!authorized(code)) throw new Error("Invalid access code");
-        if (!/^library\/[\w.-]{1,120}\/(song|stems\/(vocals|drums|bass|other))\.[a-z0-9]{1,5}$/i.test(pathname)) throw new Error("Unexpected upload path");
+        const ok = /^library\/[\w.-]{1,120}\/(song|stems\/(vocals|drums|bass|other))\.[a-z0-9]{1,5}$/i.test(pathname) || /^mixes\/[\w.-]{1,120}\/mix\.(mp3|wav)$/i.test(pathname);
+        if (!ok) throw new Error("Unexpected upload path");
         return {
           allowedContentTypes: ["audio/*", "application/octet-stream"],
           maximumSizeInBytes: 80 * 1024 * 1024,

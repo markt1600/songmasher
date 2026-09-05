@@ -2,7 +2,9 @@
 /** Client for the cloud library (Vercel Blob behind /api/library). */
 import { upload } from "@vercel/blob/client";
 import type { SongAnalysis } from "./audio/analysis";
-import type { LibrarySong } from "./library";
+import type { LibraryMix, LibraryProject, LibrarySong } from "./library";
+
+export type CloudKind = "library" | "projects" | "mixes";
 
 export class AccessCodeError extends Error {
   constructor() {
@@ -100,4 +102,34 @@ export async function cloudSaveStems(id: string, urls: Record<string, string>, c
 export async function cloudFetch(url: string, code: string): Promise<ArrayBuffer> {
   const res = await check(await fetch(`/api/stems/fetch?url=${encodeURIComponent(url)}`, { headers: { "x-access-code": code } }));
   return res.arrayBuffer();
+}
+
+// ---- Generic metadata records (projects, mixes) --------------------------------
+export async function cloudListKind<T>(kind: CloudKind, code: string): Promise<T[]> {
+  const res = await check(await fetch(`/api/library?kind=${kind}`, { headers: headers(code), cache: "no-store" }));
+  const j = (await res.json()) as { songs: T[] };
+  return j.songs;
+}
+export async function cloudPutKind(kind: CloudKind, record: { id: string }, code: string): Promise<void> {
+  await check(await fetch(`/api/library?kind=${kind}`, { method: "PUT", headers: headers(code), body: JSON.stringify(record) }));
+}
+export async function cloudDeleteKind(kind: CloudKind, id: string, code: string): Promise<void> {
+  await check(await fetch(`/api/library?kind=${kind}&id=${encodeURIComponent(id)}`, { method: "DELETE", headers: headers(code) }));
+}
+export const cloudListProjects = (code: string) => cloudListKind<LibraryProject>("projects", code);
+export const cloudListMixes = (code: string) => cloudListKind<LibraryMix>("mixes", code);
+
+export async function cloudUploadMix(id: string, file: Blob, format: "wav" | "mp3", code: string): Promise<string> {
+  try {
+    const res = await upload(`mixes/${id}/mix.${format}`, file, {
+      access: "public",
+      handleUploadUrl: "/api/library/upload",
+      clientPayload: JSON.stringify({ code }),
+      contentType: format === "mp3" ? "audio/mpeg" : "audio/wav",
+    });
+    return res.url;
+  } catch (err) {
+    if (/access code/i.test((err as Error).message)) throw new AccessCodeError();
+    throw err;
+  }
 }

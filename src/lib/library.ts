@@ -5,7 +5,7 @@
  * can be reloaded instantly without re-analysing or re-separating it.
  */
 import type { SongAnalysis } from "./audio/analysis";
-import type { StemSource } from "./types";
+import type { DeckId, Project, StemKey, StemSource } from "./types";
 
 export const AI_STEM_KEYS = ["vocals", "drums", "bass", "other"] as const;
 export type AiStemKey = (typeof AI_STEM_KEYS)[number];
@@ -42,8 +42,33 @@ interface StoredFile {
   blob: Blob;
 }
 
+export interface LibraryProject {
+  id: string;
+  name: string;
+  createdAt: number;
+  updatedAt: number;
+  songs: Partial<Record<DeckId, string>>;
+  songNames: Partial<Record<DeckId, string>>;
+  deckSettings: Partial<Record<DeckId, { semitones: number; activeStem: StemKey }>>;
+  project: Project;
+  cloud?: boolean;
+}
+
+export interface LibraryMix {
+  id: string;
+  name: string;
+  createdAt: number;
+  durationSec: number;
+  format: "wav" | "mp3";
+  size: number;
+  songNames: string[];
+  /** cloud copy (public URL); required for sharing */
+  url?: string;
+  cloud?: boolean;
+}
+
 const DB_NAME = "songmasher";
-const DB_VERSION = 1;
+const DB_VERSION = 2;
 
 function openDb(): Promise<IDBDatabase> {
   return new Promise((resolve, reject) => {
@@ -53,13 +78,17 @@ function openDb(): Promise<IDBDatabase> {
       const db = req.result;
       if (!db.objectStoreNames.contains("songs")) db.createObjectStore("songs", { keyPath: "id" });
       if (!db.objectStoreNames.contains("files")) db.createObjectStore("files", { keyPath: "id" });
+      if (!db.objectStoreNames.contains("projects")) db.createObjectStore("projects", { keyPath: "id" });
+      if (!db.objectStoreNames.contains("mixes")) db.createObjectStore("mixes", { keyPath: "id" });
     };
     req.onsuccess = () => resolve(req.result);
     req.onerror = () => reject(req.error ?? new Error("Could not open library"));
   });
 }
 
-function tx<T>(store: "songs" | "files", mode: IDBTransactionMode, fn: (s: IDBObjectStore) => IDBRequest<T>): Promise<T> {
+type StoreName = "songs" | "files" | "projects" | "mixes";
+
+function tx<T>(store: StoreName, mode: IDBTransactionMode, fn: (s: IDBObjectStore) => IDBRequest<T>): Promise<T> {
   return openDb().then(
     (db) =>
       new Promise<T>((resolve, reject) => {
@@ -164,4 +193,59 @@ export function formatBytes(n: number): string {
   if (n < 1024 * 1024) return `${Math.round(n / 1024)} KB`;
   if (n < 1024 * 1024 * 1024) return `${(n / 1024 / 1024).toFixed(1)} MB`;
   return `${(n / 1024 / 1024 / 1024).toFixed(2)} GB`;
+}
+
+// ---- Projects ---------------------------------------------------------------
+export async function listProjects(): Promise<LibraryProject[]> {
+  try {
+    const all = await tx<LibraryProject[]>("projects", "readonly", (s) => s.getAll());
+    return all.sort((a, b) => b.updatedAt - a.updatedAt);
+  } catch {
+    return [];
+  }
+}
+export async function getProject(id: string): Promise<LibraryProject | undefined> {
+  try {
+    return await tx<LibraryProject | undefined>("projects", "readonly", (s) => s.get(id));
+  } catch {
+    return undefined;
+  }
+}
+export async function putProject(p: LibraryProject): Promise<void> {
+  await tx("projects", "readwrite", (s) => s.put(p));
+}
+export async function deleteProject(id: string): Promise<void> {
+  await tx("projects", "readwrite", (s) => s.delete(id));
+}
+
+// ---- Mixes ------------------------------------------------------------------
+export async function listMixes(): Promise<LibraryMix[]> {
+  try {
+    const all = await tx<LibraryMix[]>("mixes", "readonly", (s) => s.getAll());
+    return all.sort((a, b) => b.createdAt - a.createdAt);
+  } catch {
+    return [];
+  }
+}
+export async function getMix(id: string): Promise<LibraryMix | undefined> {
+  try {
+    return await tx<LibraryMix | undefined>("mixes", "readonly", (s) => s.get(id));
+  } catch {
+    return undefined;
+  }
+}
+export async function putMix(m: LibraryMix): Promise<void> {
+  await tx("mixes", "readwrite", (s) => s.put(m));
+}
+export async function deleteMix(id: string): Promise<void> {
+  await tx("mixes", "readwrite", (s) => s.delete(id));
+  await tx("files", "readwrite", (s) => s.delete(`mix:${id}`));
+}
+
+export function randomId(): string {
+  const bytes = new Uint8Array(12);
+  crypto.getRandomValues(bytes);
+  return Array.from(bytes)
+    .map((b) => b.toString(16).padStart(2, "0"))
+    .join("");
 }

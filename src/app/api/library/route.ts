@@ -6,6 +6,12 @@ export const dynamic = "force-dynamic";
 export const maxDuration = 60;
 
 const ID_RE = /^[\w.-]{1,120}$/;
+const KINDS = ["library", "projects", "mixes"] as const;
+type Kind = (typeof KINDS)[number];
+function kindOf(request: Request): Kind {
+  const k = new URL(request.url).searchParams.get("kind") ?? "library";
+  return (KINDS as readonly string[]).includes(k) ? (k as Kind) : "library";
+}
 
 interface BlobRow {
   url: string;
@@ -33,8 +39,9 @@ function metaStamp(pathname: string): number {
 export async function GET(request: Request): Promise<Response> {
   if (!cloudEnabled()) return Response.json({ error: "Cloud library is not configured" }, { status: 501 });
   if (!authorized(request.headers.get("x-access-code"))) return unauthorized();
+  const kind = kindOf(request);
   try {
-    const rows = await listAll("library/");
+    const rows = await listAll(`${kind}/`);
     const bySong = new Map<string, BlobRow[]>();
     for (const r of rows) {
       const id = r.pathname.split("/")[1];
@@ -74,15 +81,16 @@ export async function PUT(request: Request): Promise<Response> {
   }
   const id = typeof song.id === "string" ? song.id : "";
   if (!ID_RE.test(id)) return Response.json({ error: "Invalid song id" }, { status: 400 });
+  const kind = kindOf(request);
   try {
     const stamp = Date.now();
-    await put(`library/${id}/meta-${stamp}.json`, JSON.stringify(song), {
+    await put(`${kind}/${id}/meta-${stamp}.json`, JSON.stringify(song), {
       access: "public",
       addRandomSuffix: false,
       contentType: "application/json",
       cacheControlMaxAge: 60,
     });
-    const old = (await listAll(`library/${id}/meta-`)).filter((f) => metaStamp(f.pathname) < stamp);
+    const old = (await listAll(`${kind}/${id}/meta-`)).filter((f) => metaStamp(f.pathname) < stamp);
     if (old.length) await del(old.map((f) => f.url));
     return Response.json({ ok: true });
   } catch (err) {
@@ -96,8 +104,9 @@ export async function DELETE(request: Request): Promise<Response> {
   if (!authorized(request.headers.get("x-access-code"))) return unauthorized();
   const id = new URL(request.url).searchParams.get("id") ?? "";
   if (!ID_RE.test(id)) return Response.json({ error: "Invalid song id" }, { status: 400 });
+  const kind = kindOf(request);
   try {
-    const rows = await listAll(`library/${id}/`);
+    const rows = await listAll(`${kind}/${id}/`);
     if (rows.length) await del(rows.map((r) => r.url));
     return Response.json({ ok: true, deleted: rows.length });
   } catch (err) {

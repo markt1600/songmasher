@@ -46,7 +46,7 @@ export default function Waveform({ deckId, analysis, height = 176 }: Props) {
   const [width, setWidth] = useState(600);
   // View window keyed by the song it belongs to, so a new song always starts fitted.
   const [viewState, setViewState] = useState<{ dur: number; start: number; end: number }>({ dur: analysis.duration, start: 0, end: analysis.duration });
-  const view = viewState.dur === analysis.duration ? viewState : { start: 0, end: analysis.duration };
+  const view = useMemo(() => (viewState.dur === analysis.duration ? { start: viewState.start, end: viewState.end } : { start: 0, end: analysis.duration }), [viewState, analysis.duration]);
   const setView = useCallback((v: { start: number; end: number }) => setViewState({ dur: analysis.duration, ...v }), [analysis.duration]);
   const dragRef = useRef<{ anchorBar: number; moved: boolean } | null>(null);
   const [hoverBar, setHoverBar] = useState<number | null>(null);
@@ -268,7 +268,9 @@ export default function Waveform({ deckId, analysis, height = 176 }: Props) {
   // Wheel: ⌘/ctrl zooms around the cursor, horizontal or shift-wheel pans. Registered natively so we
   // can call preventDefault (React's onWheel is passive).
   const wheelState = useRef({ zoomAround, pan, zoomed });
-  wheelState.current = { zoomAround, pan, zoomed };
+  useEffect(() => {
+    wheelState.current = { zoomAround, pan, zoomed };
+  });
   useEffect(() => {
     const el = wrapRef.current;
     if (!el) return;

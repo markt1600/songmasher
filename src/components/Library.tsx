@@ -1,7 +1,7 @@
 "use client";
 import { useRef, useState } from "react";
 import { useStore } from "@/lib/store";
-import { formatBytes, type LibrarySong } from "@/lib/library";
+import { formatBytes, type LibraryMix, type LibraryProject, type LibrarySong } from "@/lib/library";
 import { DECK_COLORS, type DeckId } from "@/lib/types";
 import { Icon } from "./ui";
 import { beginDragOnMove } from "@/lib/dnd";
@@ -21,7 +21,10 @@ export default function Library() {
   const syncing = useStore((s) => s.syncing);
   const cloudBytes = useStore((s) => s.cloudBytes);
   const cloudError = useStore((s) => s.cloudError);
-  const { importFiles, loadFromLibrary, deleteFromLibrary, changeAccessCode, refreshLibrary } = useStore();
+  const { importFiles, loadFromLibrary, deleteFromLibrary, changeAccessCode, refreshLibrary, openProject, renameProject, deleteProject, deleteMix, shareLink, playMix, showToast } = useStore();
+  const projects = useStore((s) => s.projects);
+  const mixes = useStore((s) => s.mixes);
+  const currentProject = useStore((s) => s.currentProject);
   const fileRef = useRef<HTMLInputElement>(null);
   const [drag, setDrag] = useState(false);
   const [confirmId, setConfirmId] = useState<string | null>(null);
@@ -118,7 +121,140 @@ export default function Library() {
           ))}
         </div>
       )}
+
+      {projects.length > 0 && (
+        <div className="flex flex-col gap-2 pt-1 border-t border-white/[0.06]">
+          <div className="flex items-center gap-2 mt-1">
+            <Icon name="folder" size={12} />
+            <span className="label">Mashups</span>
+            <span className="text-[11px] text-muted">{projects.length}</span>
+          </div>
+          <div className="flex gap-2.5 overflow-x-auto pb-1 -mx-1 px-1">
+            {projects.map((p) => (
+              <ProjectCard key={p.id} p={p} active={currentProject?.id === p.id} onOpen={() => void openProject(p.id)} onRename={() => void renameProject(p.id)} onDelete={() => void deleteProject(p.id)} />
+            ))}
+          </div>
+        </div>
+      )}
+
+      {mixes.length > 0 && (
+        <div className="flex flex-col gap-2 pt-1 border-t border-white/[0.06]">
+          <div className="flex items-center gap-2 mt-1">
+            <Icon name="download" size={12} />
+            <span className="label">Rendered mixes</span>
+            <span className="text-[11px] text-muted">{mixes.length}</span>
+          </div>
+          <div className="flex gap-2.5 overflow-x-auto pb-1 -mx-1 px-1">
+            {mixes.map((m) => (
+              <MixCard
+                key={m.id}
+                m={m}
+                link={shareLink(m.id)}
+                onPlay={() => playMix(m.id)}
+                onShare={async () => {
+                  const l = shareLink(m.id);
+                  if (!l) return;
+                  try {
+                    await navigator.clipboard.writeText(l);
+                    showToast("Share link copied");
+                  } catch {
+                    window.prompt("Share link", l);
+                  }
+                }}
+                onDelete={() => void deleteMix(m.id)}
+              />
+            ))}
+          </div>
+        </div>
+      )}
     </section>
+  );
+}
+
+function ProjectCard({ p, active, onOpen, onRename, onDelete }: { p: LibraryProject; active: boolean; onOpen: () => void; onRename: () => void; onDelete: () => void }) {
+  const [confirm, setConfirm] = useState(false);
+  const songs = (["A", "B"] as const).map((d) => p.songNames[d]).filter(Boolean);
+  return (
+    <div className="relative shrink-0 w-[250px] rounded-[12px] inset p-3 flex flex-col gap-2 fade-in" style={active ? { borderColor: "rgba(124,108,255,0.6)", boxShadow: "0 0 0 1px rgba(124,108,255,0.25)" } : undefined}>
+      <div className="min-w-0">
+        <div className="text-[13px] font-semibold truncate tracking-[-0.01em]" title={p.name}>
+          {p.name}
+        </div>
+        <div className="text-[11px] text-muted mt-0.5 truncate">{songs.join(" × ") || "No songs"}</div>
+        <div className="text-[10.5px] text-muted/80 mt-0.5 font-mono tabular-nums">
+          {p.project.clips.length} clip{p.project.clips.length === 1 ? "" : "s"} · {p.project.lengthBars} bars · {new Date(p.updatedAt).toLocaleDateString()}
+        </div>
+      </div>
+      <div className="flex items-center gap-1.5">
+        <button className="btn btn-xs btn-primary" onClick={onOpen}>
+          Open
+        </button>
+        <button className="btn btn-xs" onClick={onRename} title="Rename">
+          Rename
+        </button>
+        <div className="flex-1" />
+        <button
+          className={`btn btn-xs btn-ghost ${confirm ? "!text-[#ff6b61] !bg-[#ff453a]/15" : "text-muted hover:!text-[#ff6b61]"}`}
+          onClick={() => {
+            if (confirm) onDelete();
+            else {
+              setConfirm(true);
+              window.setTimeout(() => setConfirm(false), 3500);
+            }
+          }}
+          title={confirm ? "Click again to delete" : "Delete mashup"}
+        >
+          {confirm ? "Delete?" : <Icon name="trash" size={11} />}
+        </button>
+      </div>
+    </div>
+  );
+}
+
+function MixCard({ m, link, onPlay, onShare, onDelete }: { m: LibraryMix; link: string | null; onPlay: () => Promise<string | null>; onShare: () => void; onDelete: () => void }) {
+  const [confirm, setConfirm] = useState(false);
+  const [src, setSrc] = useState<string | null>(null);
+  return (
+    <div className="relative shrink-0 w-[290px] rounded-[12px] inset p-3 flex flex-col gap-2 fade-in">
+      <div className="min-w-0">
+        <div className="text-[13px] font-semibold truncate tracking-[-0.01em]" title={m.name}>
+          {m.name}
+        </div>
+        <div className="text-[11px] text-muted mt-0.5 font-mono tabular-nums truncate">
+          {fmtDuration(m.durationSec)} · {m.format.toUpperCase()} · {formatBytes(m.size)} · {new Date(m.createdAt).toLocaleDateString()}
+        </div>
+      </div>
+      {src ? (
+        <audio controls autoPlay src={src} className="w-full h-8" />
+      ) : (
+        <div className="flex items-center gap-1.5">
+          <button className="btn btn-xs" onClick={async () => setSrc(await onPlay())}>
+            <Icon name="play" size={10} /> Play
+          </button>
+          {link ? (
+            <button className="btn btn-xs" onClick={onShare} title={link}>
+              <Icon name="share" size={10} /> Share
+            </button>
+          ) : (
+            <span className="text-[10.5px] text-muted" title="Turn on the cloud library (Vercel Blob) to share mixes by link">local only</span>
+          )}
+          <div className="flex-1" />
+          <button
+            className={`btn btn-xs btn-ghost ${confirm ? "!text-[#ff6b61] !bg-[#ff453a]/15" : "text-muted hover:!text-[#ff6b61]"}`}
+            onClick={() => {
+              if (confirm) onDelete();
+              else {
+                setConfirm(true);
+                window.setTimeout(() => setConfirm(false), 3500);
+              }
+            }}
+            title={confirm ? "Click again to delete" : "Delete mix"}
+          >
+            {confirm ? "Delete?" : <Icon name="trash" size={11} />}
+          </button>
+        </div>
+      )}
+    </div>
   );
 }
 

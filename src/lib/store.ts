@@ -11,7 +11,7 @@ import { playWindow } from "./engine/engine";
 import { computeSuggestions, type Suggestion, type SuggestionAction } from "./advisor";
 import { describeSong, sanitizePlan } from "./planRules";
 import * as lib from "./library";
-import type { LibrarySong } from "./library";
+import type { LibraryMix, LibraryProject, LibrarySong } from "./library";
 import * as cloud from "./cloud";
 import { AccessCodeError } from "./cloud";
 
@@ -86,6 +86,17 @@ export interface ExportOptions {
   format: "wav" | "mp3";
   range: "all" | "loop";
   normalize: boolean;
+  /** also keep the render in the library (and share it when the cloud library is on) */
+  save?: boolean;
+}
+
+export interface SessionSnapshot {
+  songs: Partial<Record<DeckId, string>>;
+  songNames: Partial<Record<DeckId, string>>;
+  deckSettings: Partial<Record<DeckId, { semitones: number; activeStem: StemKey }>>;
+  project: Project;
+  currentProject: { id: string; name: string } | null;
+  at: number;
 }
 
 export interface AppConfig {
@@ -133,9 +144,25 @@ interface Store {
   syncing: string | null;
   cloudBytes: number;
   cloudError: string | null;
+  projects: LibraryProject[];
+  mixes: LibraryMix[];
+  currentProject: { id: string; name: string } | null;
+  dirty: boolean;
+  restorable: SessionSnapshot | null;
 
   loadConfig: () => Promise<void>;
   refreshLibrary: () => Promise<void>;
+  saveProject: (name?: string) => Promise<void>;
+  saveProjectAs: () => Promise<void>;
+  openProject: (id: string) => Promise<void>;
+  renameProject: (id: string) => Promise<void>;
+  deleteProject: (id: string) => Promise<void>;
+  newProject: () => void;
+  restoreSession: () => Promise<void>;
+  dismissRestore: () => void;
+  deleteMix: (id: string) => Promise<void>;
+  shareLink: (id: string) => string | null;
+  playMix: (id: string) => Promise<string | null>;
   importFiles: (files: File[]) => Promise<void>;
   loadFromLibrary: (deckId: DeckId, id: string) => Promise<void>;
   deleteFromLibrary: (id: string) => Promise<void>;
@@ -526,9 +553,112 @@ export const useStore = create<Store>((set, get) => {
       history.lastKey = coalesce ?? "";
       history.future = [];
     }
-    set({ project: next, canUndo: history.past.length > 0, canRedo: history.future.length > 0 });
+    set({ project: next, canUndo: history.past.length > 0, canRedo: history.future.length > 0, dirty: true });
+    autosave();
   };
   let clipboard: Clip[] = [];
+
+  /** Two-way sync of small metadata records (projects, mixes) between IndexedDB and the cloud. */
+  const syncRecords = async <T extends { id: string; cloud?: boolean; updatedAt?: number; createdAt?: number }>(
+    kind: "projects" | "mixes",
+    local: T[],
+    putLocal: (r: T) => Promise<void>,
+    deleteLocal: (id: string) => Promise<void>,
+    apply: (list: T[]) => void,
+  ) => {
+    try {
+      const remote = await withCode((code) => cloud.cloudListKind<T>(kind, code));
+      if (!remote) return;
+      const remoteById = new Map(remote.map((r) => [r.id, r]));
+      const merged: T[] = [];
+      for (const l of local) {
+        const r = remoteById.get(l.id);
+        if (r) {
+          remoteById.delete(l.id);
+          const remoteNewer = (r.updatedAt ?? r.createdAt ?? 0) > (l.updatedAt ?? l.createdAt ?? 0);
+          const next = remoteNewer ? { ...l, ...r, cloud: true } : { ...l, cloud: true };
+          await putLocal(next);
+          if (!remoteNewer && (l.updatedAt ?? 0) > (r.updatedAt ?? 0)) void withCode((code) => cloud.cloudPutKind(kind, next, code));
+          merged.push(next);
+        } else if (l.cloud) {
+          await deleteLocal(l.id);
+        } else {
+          merged.push(l);
+          if (kind === "projects" || (l as unknown as LibraryMix).url) {
+            const next = { ...l, cloud: true };
+            void withCode((code) => cloud.cloudPutKind(kind, next, code)).then(() => putLocal(next));
+          }
+        }
+      }
+      for (const r of remoteById.values()) {
+        await putLocal({ ...r, cloud: true });
+        merged.push({ ...r, cloud: true });
+      }
+      apply(merged);
+    } catch (err) {
+      set({ cloudError: (err as Error).message });
+    }
+  };
+
+  const snapshot = (): SessionSnapshot => {
+    const s = get();
+    const songs: SessionSnapshot["songs"] = {};
+    const songNames: SessionSnapshot["songNames"] = {};
+    const deckSettings: SessionSnapshot["deckSettings"] = {};
+    for (const id of ["A", "B"] as DeckId[]) {
+      const d = s.decks[id];
+      if (d.status === "ready" && d.songId) {
+        songs[id] = d.songId;
+        songNames[id] = d.name;
+        deckSettings[id] = { semitones: d.semitones, activeStem: d.activeStem };
+      }
+    }
+    return { songs, songNames, deckSettings, project: s.project, currentProject: s.currentProject, at: Date.now() };
+  };
+
+  let autosaveTimer: number | null = null;
+  const autosave = () => {
+    if (autosaveTimer) window.clearTimeout(autosaveTimer);
+    autosaveTimer = window.setTimeout(() => {
+      try {
+        const snap = snapshot();
+        if (Object.keys(snap.songs).length === 0) return;
+        window.localStorage.setItem("songmasher.session", JSON.stringify(snap));
+      } catch {
+        /* storage full or unavailable */
+      }
+    }, 800);
+  };
+
+  /** Load a snapshot (saved project or autosaved session) into the decks and timeline. */
+  const restoreSnapshot = async (snap: Omit<SessionSnapshot, "at" | "currentProject">, current: { id: string; name: string } | null) => {
+    engine.stop();
+    set({ playing: false, previewDeck: null, busy: { label: "Opening mashup", value: 0.1 } });
+    try {
+      for (const id of ["A", "B"] as DeckId[]) {
+        const songId = snap.songs[id];
+        if (!songId) {
+          if (get().decks[id].status !== "empty") get().clearDeck(id);
+          continue;
+        }
+        if (get().decks[id].songId !== songId || get().decks[id].status !== "ready") await get().loadFromLibrary(id, songId);
+        const d = get().decks[id];
+        if (d.status !== "ready") throw new Error(`${snap.songNames[id] ?? "A song"} is no longer in the library`);
+        const ds = snap.deckSettings[id];
+        if (ds) {
+          setDeck(id, { semitones: ds.semitones, activeStem: d.buffers[ds.activeStem] ? ds.activeStem : "full" });
+          engine.invalidateDeck(id);
+        }
+      }
+      history.past = [];
+      history.future = [];
+      set({ project: { ...snap.project, automation: snap.project.automation ?? emptyAutomation(), cues: snap.project.cues ?? [], loopRegion: snap.project.loopRegion ?? null }, currentProject: current, dirty: false, canUndo: false, canRedo: false, selectedClipIds: [] });
+      engine.invalidateAll();
+      refreshSuggestions();
+    } finally {
+      set({ busy: null });
+    }
+  };
 
   const storeImpl = {
     decks: { A: emptyDeck("A"), B: emptyDeck("B") },
@@ -554,6 +684,11 @@ export const useStore = create<Store>((set, get) => {
     syncing: null,
     cloudBytes: 0,
     cloudError: null,
+    projects: [],
+    mixes: [],
+    currentProject: null,
+    dirty: false,
+    restorable: null,
 
     showToast: (msg: string) => {
       set({ toast: msg });
@@ -577,16 +712,27 @@ export const useStore = create<Store>((set, get) => {
         set({ config: { loaded: true, ai: false, cloud: false, stems: false, needCode: false } });
       }
       await get().refreshLibrary();
+      try {
+        const raw = window.localStorage.getItem("songmasher.session");
+        if (raw) {
+          const snap = JSON.parse(raw) as SessionSnapshot;
+          if (snap && snap.project && Object.keys(snap.songs ?? {}).length > 0 && Date.now() - (snap.at ?? 0) < 30 * 24 * 3600 * 1000) set({ restorable: snap });
+        }
+      } catch {
+        /* ignore */
+      }
     },
 
     refreshLibrary: async () => {
-      const [local, storage] = await Promise.all([lib.listSongs(), lib.storageEstimate()]);
-      set({ storage });
+      const [local, storage, localProjects, localMixes] = await Promise.all([lib.listSongs(), lib.storageEstimate(), lib.listProjects(), lib.listMixes()]);
+      set({ storage, projects: localProjects, mixes: localMixes });
       const cfg = get().config;
       if (!cfg.loaded || !cfg.cloud) {
         set({ library: local });
         return;
       }
+      void syncRecords("projects", localProjects, lib.putProject, lib.deleteProject, (list) => set({ projects: list.sort((a, b) => b.updatedAt - a.updatedAt) }));
+      void syncRecords("mixes", localMixes, lib.putMix, lib.deleteMix, (list) => set({ mixes: list.sort((a, b) => b.createdAt - a.createdAt) }));
       let remote: { songs: LibrarySong[]; bytes: number } | undefined;
       try {
         remote = await withCode((code) => cloud.cloudList(code));
@@ -679,6 +825,157 @@ export const useStore = create<Store>((set, get) => {
       await lib.updateSong(id, { lastUsedAt: Date.now() });
       const file = new File([blob], song.fileName, { type: song.mimeType });
       await loadSongIntoDeck(deckId, song, file);
+    },
+
+    saveProject: async (name) => {
+      const s = get();
+      const snap = snapshot();
+      if (Object.keys(snap.songs).length === 0) {
+        get().showToast("Load a song before saving a mashup");
+        return;
+      }
+      let current = s.currentProject;
+      if (!current) {
+        const suggested = name ?? Object.values(snap.songNames).filter(Boolean).join(" × ") ?? "Mashup";
+        const n = name ?? window.prompt("Name this mashup", suggested);
+        if (!n) return;
+        current = { id: lib.randomId(), name: n.trim() || suggested };
+      } else if (name) current = { ...current, name };
+      const existing = await lib.getProject(current.id);
+      const rec: LibraryProject = {
+        id: current.id,
+        name: current.name,
+        createdAt: existing?.createdAt ?? Date.now(),
+        updatedAt: Date.now(),
+        songs: snap.songs,
+        songNames: snap.songNames,
+        deckSettings: snap.deckSettings,
+        project: snap.project,
+        cloud: get().config.cloud,
+      };
+      await lib.putProject(rec);
+      set({ currentProject: current, dirty: false, projects: [rec, ...get().projects.filter((p) => p.id !== rec.id)] });
+      if (get().config.cloud) {
+        try {
+          await withCode((code) => cloud.cloudPutKind("projects", rec, code));
+        } catch (err) {
+          set({ cloudError: (err as Error).message });
+        }
+      }
+      get().showToast(`Saved “${current.name}”`);
+    },
+
+    saveProjectAs: async () => {
+      const s = get();
+      const n = window.prompt("Save a copy as", s.currentProject ? `${s.currentProject.name} copy` : "Mashup");
+      if (!n) return;
+      set({ currentProject: null });
+      await get().saveProject(n.trim() || "Mashup");
+    },
+
+    openProject: async (id) => {
+      const p = await lib.getProject(id);
+      if (!p) {
+        get().showToast("That mashup is no longer in the library");
+        return;
+      }
+      if (get().dirty && get().currentProject && !window.confirm("Discard unsaved changes to the current mashup?")) return;
+      try {
+        await restoreSnapshot(p, { id: p.id, name: p.name });
+        get().showToast(`Opened “${p.name}”`);
+      } catch (err) {
+        get().showToast(`Could not open: ${(err as Error).message}`);
+      }
+    },
+
+    renameProject: async (id) => {
+      const p = await lib.getProject(id);
+      if (!p) return;
+      const n = window.prompt("Rename mashup", p.name);
+      if (!n || !n.trim()) return;
+      const rec = { ...p, name: n.trim(), updatedAt: Date.now() };
+      await lib.putProject(rec);
+      set({ projects: get().projects.map((x) => (x.id === id ? rec : x)), currentProject: get().currentProject?.id === id ? { id, name: rec.name } : get().currentProject });
+      if (get().config.cloud) void withCode((code) => cloud.cloudPutKind("projects", rec, code)).catch((err) => set({ cloudError: (err as Error).message }));
+    },
+
+    deleteProject: async (id) => {
+      const p = await lib.getProject(id);
+      await lib.deleteProject(id);
+      set({ projects: get().projects.filter((x) => x.id !== id), currentProject: get().currentProject?.id === id ? null : get().currentProject });
+      if (get().config.cloud && p?.cloud !== false) {
+        try {
+          await withCode((code) => cloud.cloudDeleteKind("projects", id, code));
+        } catch (err) {
+          get().showToast(`Removed here, but the cloud copy could not be deleted: ${(err as Error).message}`);
+        }
+      }
+    },
+
+    newProject: () => {
+      if (get().dirty && get().currentProject && !window.confirm("Discard unsaved changes to the current mashup?")) return;
+      engine.stop();
+      history.past = [];
+      history.future = [];
+      const s = get();
+      set({
+        playing: false,
+        previewDeck: null,
+        currentProject: null,
+        dirty: false,
+        canUndo: false,
+        canRedo: false,
+        selectedClipIds: [],
+        project: { ...s.project, clips: [], automation: emptyAutomation(), cues: [], loopRegion: null, lengthBars: 16 },
+      });
+      engine.invalidateAll();
+    },
+
+    restoreSession: async () => {
+      const snap = get().restorable;
+      if (!snap) return;
+      set({ restorable: null });
+      try {
+        await restoreSnapshot(snap, snap.currentProject);
+        get().showToast(snap.currentProject ? `Restored “${snap.currentProject.name}”` : "Restored your last session");
+      } catch (err) {
+        get().showToast(`Could not restore: ${(err as Error).message}`);
+      }
+    },
+
+    dismissRestore: () => {
+      set({ restorable: null });
+      try {
+        window.localStorage.removeItem("songmasher.session");
+      } catch {
+        /* ignore */
+      }
+    },
+
+    deleteMix: async (id) => {
+      const m = await lib.getMix(id);
+      await lib.deleteMix(id);
+      set({ mixes: get().mixes.filter((x) => x.id !== id) });
+      if (get().config.cloud && m?.cloud !== false) {
+        try {
+          await withCode((code) => cloud.cloudDeleteKind("mixes", id, code));
+        } catch (err) {
+          get().showToast(`Removed here, but the cloud copy could not be deleted: ${(err as Error).message}`);
+        }
+      }
+    },
+
+    shareLink: (id) => {
+      const m = get().mixes.find((x) => x.id === id);
+      if (!m?.url) return null;
+      return `${window.location.origin}/m/${id}`;
+    },
+
+    playMix: async (id) => {
+      const m = get().mixes.find((x) => x.id === id);
+      const blob = await lib.getFile(`mix:${id}`);
+      if (blob) return URL.createObjectURL(blob);
+      return m?.url ?? null;
     },
 
     deleteFromLibrary: async (id) => {
@@ -783,11 +1080,15 @@ export const useStore = create<Store>((set, get) => {
 
     setDeckStem: (deckId, stem) => {
       setDeck(deckId, { activeStem: stem });
+      set({ dirty: true });
+      autosave();
     },
 
     setDeckPitch: (deckId, semitones) => {
       const v = Math.max(-12, Math.min(12, Math.round(semitones)));
       setDeck(deckId, { semitones: v });
+      set({ dirty: true });
+      autosave();
       const songId = get().decks[deckId].songId;
       if (songId) void persistSong(songId, { semitones: v });
       engine.invalidateDeck(deckId);
@@ -1226,15 +1527,44 @@ export const useStore = create<Store>((set, get) => {
         const { channels, sampleRate } = await engine.renderRange(s.project, decks, win.start, win.end, (label, value) => set({ busy: { label, value } }));
         const { finalizeMix } = await import("./audio/master");
         const blob = await finalizeMix(channels, sampleRate, o, (label, value) => set({ busy: { label, value } }));
-        const a = document.createElement("a");
         const names = ["A", "B"].map((id) => s.decks[id as DeckId].name).filter(Boolean).join(" x ") || "mashup";
+        if (o.save) {
+          const id = lib.randomId();
+          const songNames = ["A", "B"].map((d) => s.decks[d as DeckId].name).filter(Boolean);
+          const mix: LibraryMix = { id, name: s.currentProject?.name ?? names, createdAt: Date.now(), durationSec: win.end - win.start, format: o.format, size: blob.size, songNames };
+          await lib.putFile(`mix:${id}`, blob);
+          await lib.putMix(mix);
+          set({ mixes: [mix, ...get().mixes] });
+          if (get().config.cloud) {
+            set({ busy: { label: "Uploading mix", value: 0.95 } });
+            try {
+              const url = await withCode((code) => cloud.cloudUploadMix(id, blob, o.format, code));
+              if (url) {
+                const rec = { ...mix, url, cloud: true };
+                await lib.putMix(rec);
+                await withCode((code) => cloud.cloudPutKind("mixes", rec, code));
+                set({ mixes: get().mixes.map((x) => (x.id === id ? rec : x)) });
+                const link = `${window.location.origin}/m/${id}`;
+                try {
+                  await navigator.clipboard.writeText(link);
+                  get().showToast("Saved to library · share link copied");
+                } catch {
+                  get().showToast("Saved to library · use Share on the mix to copy its link");
+                }
+              }
+            } catch (err) {
+              get().showToast(`Saved locally, but the upload failed: ${(err as Error).message}`);
+            }
+          } else get().showToast("Saved to library");
+        }
+        const a = document.createElement("a");
         a.href = URL.createObjectURL(blob);
         a.download = `${names} - SongMasher.${o.format}`;
         document.body.appendChild(a);
         a.click();
         a.remove();
         window.setTimeout(() => URL.revokeObjectURL(a.href), 10000);
-        get().showToast(`Mashup exported as ${o.format.toUpperCase()}`);
+        if (!o.save) get().showToast(`Mashup exported as ${o.format.toUpperCase()}`);
       } catch (err) {
         get().showToast(`Export failed: ${(err as Error).message}`);
       } finally {

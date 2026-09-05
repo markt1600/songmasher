@@ -10,12 +10,16 @@ export default function Header() {
   const previewDeck = useStore((s) => s.previewDeck);
   const busy = useStore((s) => s.busy);
   const decks = useStore((s) => s.decks);
-  const { play, pause, stop, toggleLoop, setMasterBpm, adoptDeckTempo, exportMix, toggleMetronome, toggleCountIn, undo, redo } = useStore();
+  const { play, pause, stop, toggleLoop, setMasterBpm, adoptDeckTempo, exportMix, toggleMetronome, toggleCountIn, undo, redo, saveProject, saveProjectAs, newProject } = useStore();
+  const currentProject = useStore((s) => s.currentProject);
+  const dirty = useStore((s) => s.dirty);
+  const config = useStore((s) => s.config);
+  const [projectMenu, setProjectMenu] = useState(false);
   const transport = useStore((s) => s.transport);
   const canUndo = useStore((s) => s.canUndo);
   const canRedo = useStore((s) => s.canRedo);
   const [exportOpen, setExportOpen] = useState(false);
-  const [exportOpts, setExportOpts] = useState<ExportOptions>({ format: "wav", range: "all", normalize: true });
+  const [exportOpts, setExportOpts] = useState<ExportOptions>({ format: "mp3", range: "all", normalize: true, save: true });
   const anyReady = decks.A.status === "ready" || decks.B.status === "ready";
   const [bpmDraft, setBpmDraft] = useState<string | null>(null);
   const timeRef = useRef<HTMLSpanElement>(null);
@@ -57,8 +61,31 @@ export default function Header() {
           </div>
         </div>
 
-        <div className="hidden md:block ml-2 opacity-90">
-          <Spectrum width={200} height={28} />
+        <div className="hidden lg:block ml-2 opacity-90">
+          <Spectrum width={160} height={28} />
+        </div>
+
+        {/* Project */}
+        <div className="relative ml-2 min-w-0">
+          <button className="btn btn-ghost max-w-[240px] gap-1.5" onClick={() => setProjectMenu((v) => !v)} title="Mashup project" disabled={!anyReady}>
+            <span className={`h-[7px] w-[7px] rounded-full shrink-0 ${dirty ? "bg-[#ffd60a]" : "bg-[#30d158]"}`} style={{ opacity: anyReady ? 1 : 0.3 }} />
+            <span className="truncate text-[12.5px]">{currentProject?.name ?? "Untitled mashup"}</span>
+            <Icon name="chev-down" size={11} />
+          </button>
+          {projectMenu && (
+            <div className="absolute left-0 top-[38px] z-40 w-[220px] rounded-[12px] border border-white/10 bg-[#16161d]/98 backdrop-blur-xl shadow-[0_16px_48px_rgba(0,0,0,0.6)] p-1.5 flex flex-col fade-in" onPointerLeave={() => setProjectMenu(false)}>
+              <button className="btn btn-ghost justify-start" onClick={() => { setProjectMenu(false); void saveProject(); }}>
+                <Icon name="save" size={13} /> Save {currentProject ? "" : "mashup…"} <span className="ml-auto text-muted font-mono text-[10px]">⌘S</span>
+              </button>
+              <button className="btn btn-ghost justify-start" onClick={() => { setProjectMenu(false); void saveProjectAs(); }}>
+                <Icon name="folder" size={13} /> Save a copy as…
+              </button>
+              <button className="btn btn-ghost justify-start" onClick={() => { setProjectMenu(false); newProject(); }}>
+                <Icon name="plus" size={13} /> New mashup (keep songs)
+              </button>
+              <div className="text-[10.5px] text-muted px-2 pt-1.5 pb-1">Saved mashups are listed in the Library{config.cloud ? " and synced to the cloud" : ""}.</div>
+            </div>
+          )}
         </div>
 
         <div className="flex-1" />
@@ -164,6 +191,10 @@ export default function Header() {
               <label className="flex items-center justify-between cursor-pointer">
                 <span className="label">Normalise to −14 LUFS</span>
                 <input type="checkbox" checked={exportOpts.normalize} onChange={(e) => setExportOpts({ ...exportOpts, normalize: e.target.checked })} className="accent-[#7c6cff]" />
+              </label>
+              <label className="flex items-center justify-between cursor-pointer" title={config.cloud ? "Keeps the render in your library and creates a share link" : "Keeps the render in this browser's library"}>
+                <span className="label">Save to library{config.cloud ? " + share link" : ""}</span>
+                <input type="checkbox" checked={!!exportOpts.save} onChange={(e) => setExportOpts({ ...exportOpts, save: e.target.checked })} className="accent-[#7c6cff]" />
               </label>
               <button
                 className="btn btn-primary"
