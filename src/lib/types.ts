@@ -107,3 +107,10 @@ export const DECK_COLORS: Record<DeckId, { main: string; soft: string; glow: str
   A: { main: "#22d3ee", soft: "rgba(34,211,238,0.18)", glow: "rgba(34,211,238,0.55)" },
   B: { main: "#f472b6", soft: "rgba(244,114,182,0.18)", glow: "rgba(244,114,182,0.55)" },
 };
+
+export type DemucsVariant = "htdemucs" | "htdemucs_ft" | "htdemucs_6s";
+export const DEMUCS_VARIANTS: { id: DemucsVariant; label: string; hint: string }[] = [
+  { id: "htdemucs", label: "Standard", hint: "Fastest. Good for most songs." },
+  { id: "htdemucs_ft", label: "Fine-tuned", hint: "About 4x slower, cleaner vocals. Best for a cappellas." },
+  { id: "htdemucs_6s", label: "6-stem", hint: "Also isolates guitar and piano (folded into bass + music here)." },
+];

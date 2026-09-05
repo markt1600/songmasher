@@ -5,6 +5,9 @@ export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
 const STEM_KEYS = ["vocals", "drums", "bass", "other", "guitar", "piano"] as const;
+/** Demucs variants: standard, fine-tuned (slower, cleaner), 6-stem (adds guitar + piano) */
+const VARIANTS = ["htdemucs", "htdemucs_ft", "htdemucs_6s"] as const;
+type Variant = (typeof VARIANTS)[number];
 
 function client(): Replicate | null {
   const auth = process.env.REPLICATE_API_TOKEN;
@@ -37,17 +40,19 @@ export async function POST(request: Request): Promise<Response> {
   const replicate = client();
   if (!replicate) return Response.json({ error: "REPLICATE_API_TOKEN is not set" }, { status: 501 });
   let audioUrl: string;
+  let variant = process.env.DEMUCS_MODEL_VARIANT ?? "htdemucs";
   try {
-    const body = (await request.json()) as { audioUrl?: string };
+    const body = (await request.json()) as { audioUrl?: string; variant?: string };
     audioUrl = String(body.audioUrl ?? "");
     const u = new URL(audioUrl);
     if (u.protocol !== "https:") throw new Error("bad protocol");
+    if (body.variant && VARIANTS.includes(body.variant as Variant)) variant = body.variant;
   } catch {
     return Response.json({ error: "audioUrl must be an https URL" }, { status: 400 });
   }
   const input = {
     audio: audioUrl,
-    model: process.env.DEMUCS_MODEL_VARIANT ?? "htdemucs",
+    model: variant,
     stem: "none",
     output_format: "mp3",
     mp3_bitrate: 320,

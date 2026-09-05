@@ -1,4 +1,5 @@
 "use client";
+import { useState } from "react";
 import { useStore } from "@/lib/store";
 import { DECK_COLORS } from "@/lib/types";
 import { Icon } from "./ui";
@@ -12,7 +13,9 @@ export default function Advisor() {
   const claudePlan = useStore((s) => s.claudePlan);
   const claudeBusy = useStore((s) => s.claudeBusy);
   const claudeError = useStore((s) => s.claudeError);
-  const { applySuggestion, askClaude, applyClaudePlan } = useStore();
+  const { applySuggestion, askClaude, applyClaudePlan, refinePlan, separateAI } = useStore();
+  const planHistory = useStore((s) => s.planHistory);
+  const [instruction, setInstruction] = useState("");
   const bothReady = decks.A.status === "ready" && decks.B.status === "ready";
   const missingStems = (["A", "B"] as const).filter((id) => decks[id].status === "ready" && !decks[id].buffers.vocals);
   if (suggestions.length === 0 && !config.ai) return null;
@@ -151,6 +154,47 @@ export default function Advisor() {
                 <li key={i}>{t}</li>
               ))}
             </ul>
+          )}
+          {claudePlan.stemAdvice && claudePlan.stemAdvice.length > 0 && (
+            <div className="flex flex-col gap-1.5">
+              {claudePlan.stemAdvice.map((a, i) => (
+                <div key={i} className="flex flex-wrap items-center gap-2 text-[12px] rounded-[10px] inset px-3 py-2">
+                  <Icon name="sparkles" size={12} />
+                  <span>
+                    <b>Deck {a.deck}</b>: {a.reason}
+                  </span>
+                  <div className="flex-1" />
+                  <button className="btn btn-xs" disabled={!config.stems || decks[a.deck].stemBusy} onClick={() => void separateAI(a.deck, a.variant)} title={config.stems ? `Run Demucs ${a.variant}` : "AI stems are not configured on this deployment"}>
+                    Separate with {a.variant === "htdemucs_ft" ? "fine-tuned" : a.variant === "htdemucs_6s" ? "6-stem" : "standard"} Demucs
+                  </button>
+                </div>
+              ))}
+            </div>
+          )}
+          <form
+            className="flex items-center gap-2 pt-1"
+            onSubmit={(e) => {
+              e.preventDefault();
+              if (!instruction.trim() || claudeBusy) return;
+              void refinePlan(instruction);
+              setInstruction("");
+            }}
+          >
+            <input
+              className="flex-1 h-[30px] rounded-[8px] border border-white/[0.12] bg-black/30 px-3 text-[12.5px] outline-none focus:border-[#7c6cff]"
+              placeholder={planHistory.length ? "Refine again… e.g. “bring the vocal in earlier”" : "Refine this plan… e.g. “make the drop hit harder”, “use more of song B”, “shorter”"}
+              value={instruction}
+              onChange={(e) => setInstruction(e.target.value)}
+              disabled={claudeBusy}
+            />
+            <button className="btn btn-sm" type="submit" disabled={claudeBusy || !instruction.trim()}>
+              {claudeBusy ? <span className="h-3 w-3 rounded-full border-2 border-white/30 border-t-white animate-spin" /> : <Icon name="wand" size={12} />} Revise
+            </button>
+          </form>
+          {planHistory.length > 0 && (
+            <div className="text-[11px] text-muted">
+              Revisions: {planHistory.map((h) => `“${h.instruction}”`).join(" → ")}
+            </div>
           )}
         </div>
       )}

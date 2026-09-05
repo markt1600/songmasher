@@ -8,15 +8,18 @@ Built with Next.js (App Router), TypeScript, Tailwind v4 and Zustand. Designed t
 
 - **Library** – every song you add is analysed once and saved with its analysis, grid and pitch corrections, and any Demucs stems. With a Vercel Blob store configured, the library lives in the cloud and follows you to any device; the browser keeps a local copy of what you've used so reloads are instant. Without Blob, the library is browser-only (IndexedDB). Pick a saved song for deck A or B from the strip at the top, add new files there, or delete songs you no longer want (a second click confirms, and the cloud copy goes too).
 - **Analysis on load** – tempo (with an octave sanity check), beat grid and downbeat, musical key with Camelot code, and per-bar energy / rhythm / vocal-presence curves. Runs in a worker, ~1 s per song.
-- **Foundation + clips** – one song plays continuously from a bar you choose; bars from either song become clips on three lanes. Clips are dragged, resized and repeated (double-click or `D`), and everything snaps to beats. A clip either *layers* over the foundation (right for vocal or melodic stems) or *swaps* the foundation out while it plays (right for anything that brings its own drums), so you never end up with two beats at once.
+- **Foundation + clips** – one song plays continuously from a bar you choose; bars from either song become clips on three lanes. Clips are dragged, resized and repeated (double-click or `D`), and everything snaps to beats. A clip either *layers* over the foundation (right for vocal or melodic stems) or *swaps* the foundation out while it plays (right for anything that brings its own drums), so you never end up with two beats at once. Clips have fade in/out, a millisecond nudge, and an **Align** button that puts the clip's first hit on the beat. Multi-select with shift-click, copy/paste at the playhead, undo/redo.
+- **Sections** – each song gets intro / verse / chorus / bridge / break / outro labels from a self-similarity analysis. Click a section to select it; the advisor uses them too. Waveforms zoom (⌘-wheel) down to beat level.
+- **Automation and transitions** – a Level and a Filter lane on the foundation (low-pass below centre, high-pass above), a master limiter, loop region (drag the ruler or `L`), cue markers (`M`), metronome and one-bar count-in.
+- **Mashup projects** – save with ⌘S, reopen from the Library, and the session autosaves so a reload offers to restore it.
 - **Beat alignment** – every clip and the foundation are time-stretched (WSOLA, pitch-preserving) to the master tempo and started on the exact bar boundary, so the beats line up.
-- **Key matching** – per-song pitch shift in semitones; the advisor tells you the smallest shift that makes the keys compatible.
+- **Key matching** – per-song pitch shift in semitones; the advisor tells you the smallest shift that makes the keys compatible. Vocal stems are shifted with formant preservation so they don't sound chipmunked.
 - **Stems**
   - *Quick stems* – instant vocal / instrumental split using centre-channel cancellation. Local, free, rough but useful.
-  - *AI stems* – Demucs via Replicate: vocals, drums, bass + music, instrumental. Cloud, about 1–3 minutes, needs keys (below).
-- **Mash advisor** – local heuristics suggest which song should carry the beat, a tempo compromise, a key shift, and the best hook / breakdown bars. With an Anthropic key you can also ask Claude for a full arrangement plan and apply it in one click. Every plan passes through musical guard-rails (`src/lib/planRules.ts`): one beat at a time, never two lead vocals at once, instrumental foundation under a layered vocal, phrase-aligned positions. Run stems on both songs first for the best plans.
+  - *AI stems* – Demucs via Replicate: vocals, drums, bass + music, instrumental. Cloud, about 1–3 minutes, needs keys (below). Pick the standard, fine-tuned (cleaner vocals) or 6-stem variant per run.
+- **Mash advisor** – local heuristics suggest which song should carry the beat, a tempo compromise, a key shift, and the best hook / breakdown bars. With an Anthropic key you can also ask Claude for a full arrangement plan, refine it in follow-ups ("make the drop hit harder"), and apply it in one click. Claude sees the detected sections and recommends which songs need Demucs and which variant. Every plan passes through musical guard-rails (`src/lib/planRules.ts`): one beat at a time, never two lead vocals at once, instrumental foundation under a layered vocal, phrase-aligned positions.
 - **Grid fixes** – halve / double tempo, nudge the downbeat by a beat, shift the grid by 10 ms.
-- **Export** – renders the arrangement offline to a 16-bit WAV.
+- **Export** – WAV or MP3, whole arrangement or just the loop region, optional loudness normalisation to −14 LUFS. Ticking *Save to library* keeps the render as a playable mix; with the cloud library it also gets a public share page at `/m/<id>`.
 
 ## Running locally
 
@@ -62,13 +65,14 @@ npx tsx scripts/dsp-check.ts   # synthetic click tracks: verifies BPM, downbeat,
 ## Project layout
 
 ```
-src/lib/audio/      pure DSP: FFT, analysis (tempo / beats / key), WSOLA stretch + pitch, quick stems, WAV
+src/lib/audio/      pure DSP: FFT, analysis (tempo / beats / key), sections, WSOLA stretch + pitch (+ formants), quick stems, align, loudness, WAV/MP3
 src/workers/        Web Workers that run the DSP off the main thread
 src/lib/engine/     Web Audio scheduling, tempo-matched buffer cache, offline render
 src/lib/store.ts    application state and all user actions
 src/lib/advisor.ts  local mashup heuristics
 src/lib/library.ts  IndexedDB song library (files, analysis, stems)
-src/components/     Header (transport), Library, Deck, Waveform, Timeline, Advisor
+src/components/     Header (transport, export, project), Library (songs, mashups, mixes), Deck, Waveform, Timeline (automation, cues, loop), Advisor, DragLayer
+src/app/m/[id]/     public player page for shared mixes
 src/lib/cloud.ts    client for the cloud library API
 src/app/api/        config, advise (Claude), library (+upload, stems), stems (Replicate), stems/fetch (audio proxy)
 ```

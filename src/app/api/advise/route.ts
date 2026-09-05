@@ -54,7 +54,16 @@ const PlanSchema = z.object({
     }),
   ),
   tips: z.array(z.string()).max(6),
+  stemAdvice: z.array(
+    z.object({
+      deck: z.enum(["A", "B"]),
+      variant: z.enum(["htdemucs", "htdemucs_ft", "htdemucs_6s"]),
+      reason: z.string(),
+    }),
+  ),
 });
+
+const HistorySchema = z.array(z.object({ instruction: z.string().max(2000), plan: z.unknown() })).max(8);
 
 const SYSTEM = `You are the arrangement brain inside SongMasher, a two-song mashup tool. You get an automatic
 analysis of two songs and must return one concrete arrangement that a producer would actually build.
@@ -101,30 +110,46 @@ analysis of two songs and must return one concrete arrangement that a producer w
   If the tempos are near a 2:1 ratio, treat them as the same feel and keep the foundation's BPM.
 - Pitch: shift the non-foundation song only when the keys clash, by the smallest amount (prefer within +-3).
 - Labels are short ("Hook", "Hook again", "Breakdown", "Drop", "Outro"). Summary: 2-3 plain sentences.
-  Tips: 2-4 practical, specific pointers (e.g. "lower the foundation level to 0.8 under the hook").`;
+  Tips: 2-4 practical, specific pointers (e.g. "lower the foundation level to 0.8 under the hook").
+- stemAdvice: for each song that still lacks a "vocals" stem (see its stems list) and whose vocal you use, or whose
+  current stems are only the rough "quick" kind, recommend a Demucs variant: "htdemucs" for most songs,
+  "htdemucs_ft" when the vocal is the star of the mashup and needs to be clean, "htdemucs_6s" when guitar or piano
+  should be separable. Empty array when nothing is needed.
+
+## Follow-up requests
+When the conversation contains earlier plans and a new instruction ("make the drop hit harder", "use more of song B",
+"shorter"), revise the most recent plan to satisfy the instruction while keeping everything that still works.
+Return a complete plan every time, not a diff, and mention in the summary what changed.`;
 
 export async function POST(request: Request): Promise<Response> {
   if (!process.env.ANTHROPIC_API_KEY) return Response.json({ error: "ANTHROPIC_API_KEY is not set on the server" }, { status: 501 });
   let songs: z.infer<typeof SongSchema>[];
+  let history: z.infer<typeof HistorySchema> = [];
   try {
     const body = await request.json();
     songs = z.array(SongSchema).min(2).max(2).parse(body.songs);
+    if (body.history) history = HistorySchema.parse(body.history);
   } catch {
     return Response.json({ error: "Two analysed songs are required" }, { status: 400 });
   }
   const client = new Anthropic();
+  const messages: Anthropic.MessageParam[] = [
+    {
+      role: "user",
+      content: `Design the mashup for these two songs. Follow the hard rules exactly and use the precomputed windows.\n\n${JSON.stringify(songs)}`,
+    },
+  ];
+  for (const h of history) {
+    messages.push({ role: "assistant", content: JSON.stringify(h.plan) });
+    messages.push({ role: "user", content: `Revise the plan: ${h.instruction}` });
+  }
   try {
     const response = await client.messages.parse({
       model: "claude-opus-5",
       max_tokens: 8000,
       system: SYSTEM,
       output_config: { format: zodOutputFormat(PlanSchema), effort: "high" },
-      messages: [
-        {
-          role: "user",
-          content: `Design the mashup for these two songs. Follow the hard rules exactly and use the precomputed windows.\n\n${JSON.stringify(songs)}`,
-        },
-      ],
+      messages,
     });
     if (response.stop_reason === "refusal") return Response.json({ error: "The advisor declined this request" }, { status: 422 });
     const plan = response.parsed_output;

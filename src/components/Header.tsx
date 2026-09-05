@@ -50,7 +50,7 @@ export default function Header() {
 
   return (
     <header className="sticky top-0 z-30 backdrop-blur-2xl bg-[#0b0b0f]/75 border-b border-white/[0.07]">
-      <div className="max-w-[1500px] mx-auto px-4 h-[56px] flex items-center gap-3">
+      <div className="max-w-[1500px] mx-auto px-4 min-h-[56px] flex items-center gap-3 flex-wrap md:flex-nowrap py-1.5 md:py-0">
         <div className="flex items-center gap-2.5 min-w-[150px]">
           <div className="h-8 w-8 rounded-[9px] bg-gradient-to-b from-[#9d8cff] to-[#6f5cff] grid place-items-center shadow-[0_1px_0_rgba(255,255,255,0.25)_inset,0_4px_12px_rgba(111,92,255,0.35)]">
             <Icon name="music" size={16} />

@@ -2,7 +2,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useDnd } from "@/lib/dnd";
 import { useStore } from "@/lib/store";
-import { DECK_COLORS, STEM_LABELS, type DeckId, type StemKey } from "@/lib/types";
+import { DECK_COLORS, DEMUCS_VARIANTS, STEM_LABELS, type DeckId, type StemKey } from "@/lib/types";
 import { shiftedKey } from "@/lib/audio/music";
 import Waveform from "./Waveform";
 import { Icon, Segmented, Stepper } from "./ui";
@@ -50,6 +50,7 @@ export default function Deck({ id }: { id: DeckId }) {
     });
   }, [id, register, loadFromLibrary]);
   const [showGrid, setShowGrid] = useState(false);
+  const [aiMenu, setAiMenu] = useState(false);
   const fileRef = useRef<HTMLInputElement>(null);
   const color = DECK_COLORS[id];
   const isFoundation = project.foundation?.deckId === id;
@@ -210,14 +211,35 @@ export default function Deck({ id }: { id: DeckId }) {
                     <button className="btn btn-sm" onClick={() => void separateQuick(id)} title="Instant vocal / instrumental split using centre-channel cancellation. Runs locally in a second.">
                       <Icon name="wand" size={11} /> Quick
                     </button>
-                    <button
-                      className="btn btn-sm"
-                      disabled={!config.stems}
-                      onClick={() => void separateAI(id)}
-                      title={config.stems ? "Separate vocals, drums, bass and music with Demucs in the cloud (about 1–3 minutes)" : "Set REPLICATE_API_TOKEN and BLOB_READ_WRITE_TOKEN on the server to enable AI stems"}
-                    >
-                      <Icon name="sparkles" size={11} /> AI
-                    </button>
+                    <div className="relative">
+                      <button
+                        className="btn btn-sm"
+                        disabled={!config.stems}
+                        onClick={() => setAiMenu((v) => !v)}
+                        title={config.stems ? "Separate vocals, drums, bass and music with Demucs in the cloud (about 1–3 minutes)" : "Set REPLICATE_API_TOKEN and BLOB_READ_WRITE_TOKEN on the server to enable AI stems"}
+                      >
+                        <Icon name="sparkles" size={11} /> AI <Icon name="chev-down" size={10} />
+                      </button>
+                      {aiMenu && (
+                        <div className="absolute left-0 top-[30px] z-30 w-[260px] rounded-[12px] border border-white/10 bg-[#16161d]/98 backdrop-blur-xl shadow-[0_16px_48px_rgba(0,0,0,0.6)] p-1.5 flex flex-col fade-in" onPointerLeave={() => setAiMenu(false)}>
+                          {DEMUCS_VARIANTS.map((v) => (
+                            <button
+                              key={v.id}
+                              className="btn btn-ghost justify-start h-auto py-1.5 text-left"
+                              onClick={() => {
+                                setAiMenu(false);
+                                void separateAI(id, v.id);
+                              }}
+                            >
+                              <div>
+                                <div className="text-[12.5px]">{v.label}</div>
+                                <div className="text-[10.5px] text-muted font-normal">{v.hint}</div>
+                              </div>
+                            </button>
+                          ))}
+                        </div>
+                      )}
+                    </div>
                   </>
                 )}
               </div>

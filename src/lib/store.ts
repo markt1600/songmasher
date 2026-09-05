@@ -6,7 +6,7 @@ import { firstOnsetOffset } from "./audio/align";
 import { decodeArrayBuffer, decodeFile, getAudioContext, toMono } from "./engine/context";
 import { Engine, type EngineDecks } from "./engine/engine";
 import { runAnalysis, runQuickStems, runSections } from "./workers";
-import { CLIP_LANES, emptyAutomation, type AutomationPoint, type Clip, type CuePoint, type DeckId, type DeckState, type Foundation, type LoopRegion, type Project, type StemKey, type TransportOptions } from "./types";
+import { CLIP_LANES, emptyAutomation, type AutomationPoint, type Clip, type CuePoint, type DeckId, type DeckState, type DemucsVariant, type Foundation, type LoopRegion, type Project, type StemKey, type TransportOptions } from "./types";
 import { playWindow } from "./engine/engine";
 import { computeSuggestions, type Suggestion, type SuggestionAction } from "./advisor";
 import { describeSong, sanitizePlan } from "./planRules";
@@ -115,6 +115,8 @@ export interface ClaudePlan {
   pitchShift: { deck: DeckId; semitones: number; reason: string } | null;
   arrangement: { deck: DeckId; srcBar: number; lengthBars: number; startBar: number; lane: number; label: string; stem: StemKey; mode: "layer" | "swap" }[];
   tips: string[];
+  /** which songs would benefit from (better) stems, and which Demucs variant to use */
+  stemAdvice?: { deck: DeckId; variant: DemucsVariant; reason: string }[];
   /** edits the app's own rules made to the plan */
   notes?: string[];
 }
@@ -208,7 +210,9 @@ interface Store {
   toggleLoop: () => void;
   setZoom: (z: number) => void;
   separateQuick: (deckId: DeckId) => Promise<void>;
-  separateAI: (deckId: DeckId) => Promise<void>;
+  separateAI: (deckId: DeckId, variant?: DemucsVariant) => Promise<void>;
+  refinePlan: (instruction: string) => Promise<void>;
+  planHistory: { instruction: string; plan: ClaudePlan }[];
   setAccessCode: (code: string) => void;
   changeAccessCode: () => void;
   play: (from?: number) => Promise<void>;
@@ -674,6 +678,7 @@ export const useStore = create<Store>((set, get) => {
     config: { loaded: false, ai: false, cloud: false, stems: false, needCode: false },
     suggestions: [],
     claudePlan: null,
+    planHistory: [],
     claudeBusy: false,
     claudeError: null,
     toast: null,
@@ -1388,7 +1393,7 @@ export const useStore = create<Store>((set, get) => {
       void get().refreshLibrary();
     },
 
-    separateAI: async (deckId) => {
+    separateAI: async (deckId, variant = "htdemucs") => {
       const d = get().decks[deckId];
       const full = d.buffers.full;
       if (!full || !d.songId) return;
@@ -1406,7 +1411,7 @@ export const useStore = create<Store>((set, get) => {
         const startRes = await fetch("/api/stems", {
           method: "POST",
           headers: { "content-type": "application/json", "x-access-code": code },
-          body: JSON.stringify({ audioUrl }),
+          body: JSON.stringify({ audioUrl, variant }),
         });
         if (!startRes.ok) throw new Error((await startRes.json()).error ?? "Could not start separation");
         const { id } = await startRes.json();
@@ -1621,7 +1626,7 @@ export const useStore = create<Store>((set, get) => {
           ...describeSong(a),
         };
       });
-      set({ claudeBusy: true, claudeError: null });
+      set({ claudeBusy: true, claudeError: null, planHistory: [] });
       try {
         const r = await fetch("/api/advise", {
           method: "POST",
@@ -1633,6 +1638,37 @@ export const useStore = create<Store>((set, get) => {
         const plan = j.plan as ClaudePlan;
         const checked = sanitizePlan(plan, get().decks);
         set({ claudePlan: { ...plan, notes: checked?.notes ?? [] }, claudeBusy: false });
+      } catch (err) {
+        set({ claudeBusy: false, claudeError: (err as Error).message });
+      }
+    },
+
+    refinePlan: async (instruction) => {
+      const s = get();
+      const prev = s.claudePlan;
+      if (!prev || !instruction.trim()) return;
+      const payload = (["A", "B"] as DeckId[]).map((id) => {
+        const d = s.decks[id];
+        const a = d.analysis;
+        if (!a) return null;
+        return { deck: id, name: d.name, bpm: Math.round(a.bpm * 10) / 10, key: a.key.name, camelot: a.key.camelot, durationSec: Math.round(a.duration), totalBars: a.totalBars, stems: Object.keys(d.buffers), ...describeSong(a) };
+      });
+      const history = [...s.planHistory, { instruction: instruction.trim(), plan: prev }];
+      set({ claudeBusy: true, claudeError: null });
+      try {
+        const r = await fetch("/api/advise", {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({
+            songs: payload.filter(Boolean),
+            history: history.map((h) => ({ instruction: h.instruction, plan: { ...h.plan, notes: undefined } })),
+          }),
+        });
+        const j = await r.json();
+        if (!r.ok) throw new Error(j.error ?? "Advisor failed");
+        const plan = j.plan as ClaudePlan;
+        const checked = sanitizePlan(plan, get().decks);
+        set({ claudePlan: { ...plan, notes: checked?.notes ?? [] }, planHistory: history, claudeBusy: false });
       } catch (err) {
         set({ claudeBusy: false, claudeError: (err as Error).message });
       }

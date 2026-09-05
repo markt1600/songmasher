@@ -391,3 +391,62 @@ select.sel:focus-visible {
   cursor: ew-resize;
   background: linear-gradient(90deg, transparent, rgba(255, 255, 255, 0.2));
 }
+
+/* Touch and small screens ---------------------------------------------------- */
+@media (pointer: coarse) {
+  .btn {
+    height: 36px;
+    padding: 0 14px;
+    font-size: 13.5px;
+  }
+  .btn-sm {
+    height: 32px;
+    padding: 0 12px;
+    font-size: 13px;
+  }
+  .btn-xs {
+    height: 28px;
+    padding: 0 10px;
+    font-size: 12px;
+  }
+  .toolbar-group {
+    height: 38px;
+  }
+  .toolbar-group > button {
+    height: 32px;
+    min-width: 40px;
+  }
+  .seg button {
+    height: 30px;
+    padding: 0 12px;
+    font-size: 13px;
+  }
+  select.sel {
+    height: 32px;
+    font-size: 13px;
+  }
+  input.num {
+    height: 36px;
+    font-size: 14px;
+  }
+  input[type="range"] {
+    height: 6px;
+  }
+  input[type="range"]::-webkit-slider-thumb {
+    width: 22px;
+    height: 22px;
+  }
+  .clip .handle {
+    width: 18px;
+  }
+}
+
+@media (max-width: 900px) {
+  header .max-w-\[1500px\] {
+    height: auto;
+    flex-wrap: wrap;
+    padding-top: 8px;
+    padding-bottom: 8px;
+    row-gap: 8px;
+  }
+}
