@@ -47,6 +47,33 @@ export interface Clip {
   gain: number; // 0..1.5
   /** layer = play over the foundation; swap = the foundation is muted while this clip plays */
   mode?: "layer" | "swap";
+  /** fade in / out, in master beats */
+  fadeIn?: number;
+  fadeOut?: number;
+  /** fine nudge of the source position, in milliseconds (positive = start later in the source) */
+  offsetMs?: number;
+}
+
+export interface AutomationPoint {
+  beat: number;
+  value: number;
+}
+
+/** Foundation automation: level 0..1.5 (default 1), filter -1..1 (negative = low-pass, positive = high-pass, 0 = off) */
+export interface Automation {
+  level: AutomationPoint[];
+  filter: AutomationPoint[];
+}
+
+export interface CuePoint {
+  id: string;
+  beat: number;
+  label: string;
+}
+
+export interface LoopRegion {
+  startBeat: number;
+  endBeat: number;
 }
 
 export interface Foundation {
@@ -62,6 +89,16 @@ export interface Project {
   clips: Clip[];
   lengthBars: number;
   loop: boolean;
+  automation: Automation;
+  cues: CuePoint[];
+  loopRegion: LoopRegion | null;
+}
+
+export const emptyAutomation = (): Automation => ({ level: [], filter: [] });
+
+export interface TransportOptions {
+  metronome: boolean;
+  countIn: boolean;
 }
 
 export const CLIP_LANES = 3;

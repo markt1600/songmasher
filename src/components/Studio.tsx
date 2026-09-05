@@ -21,17 +21,44 @@ export default function Studio() {
       const t = e.target as HTMLElement | null;
       if (t && (t.tagName === "INPUT" || t.tagName === "SELECT" || t.tagName === "TEXTAREA")) return;
       const s = useStore.getState();
-      if (e.code === "Space") {
+      const mod = e.metaKey || e.ctrlKey;
+      if (mod && e.key.toLowerCase() === "z") {
+        e.preventDefault();
+        if (e.shiftKey) s.redo();
+        else s.undo();
+      } else if (mod && e.key.toLowerCase() === "y") {
+        e.preventDefault();
+        s.redo();
+      } else if (mod && e.key.toLowerCase() === "c") {
+        if (s.selectedClipIds.length) {
+          e.preventDefault();
+          s.copySelected();
+        }
+      } else if (mod && e.key.toLowerCase() === "v") {
+        e.preventDefault();
+        s.paste();
+      } else if (mod && e.key.toLowerCase() === "a") {
+        e.preventDefault();
+        s.selectAll();
+      } else if (mod && e.key.toLowerCase() === "d") {
+        e.preventDefault();
+        s.repeatSelected();
+      } else if (e.code === "Space") {
         e.preventDefault();
         if (s.playing) s.pause();
         else void s.play();
       } else if (e.key === "Delete" || e.key === "Backspace") {
-        if (s.selectedClipId) {
+        if (s.selectedClipIds.length) {
           e.preventDefault();
-          s.removeClip(s.selectedClipId);
+          s.removeSelected();
         }
-      } else if (e.key === "d" && s.selectedClipId) {
-        s.repeatClip(s.selectedClipId);
+      } else if (e.key === "d" && s.selectedClipIds.length) {
+        s.repeatSelected();
+      } else if (e.key === "m") {
+        s.addCue();
+      } else if (e.key === "l") {
+        if (s.project.loopRegion) s.setLoopRegion(null);
+        else s.loopSelected();
       } else if (e.key === "Escape") {
         s.selectClip(null);
       }
@@ -66,10 +93,14 @@ export default function Studio() {
         <Advisor />
         <footer className="text-[11px] text-muted text-center py-5 flex flex-wrap justify-center gap-x-4 gap-y-1">
           <span><kbd className="font-mono text-text-2">Space</kbd> play / pause</span>
-          <span><kbd className="font-mono text-text-2">D</kbd> repeat selected clip</span>
-          <span><kbd className="font-mono text-text-2">⌫</kbd> remove clip</span>
+          <span><kbd className="font-mono text-text-2">⇧click</kbd> multi-select</span>
+          <span><kbd className="font-mono text-text-2">⌘C ⌘V</kbd> copy / paste at playhead</span>
+          <span><kbd className="font-mono text-text-2">⌘Z</kbd> undo</span>
+          <span><kbd className="font-mono text-text-2">D</kbd> repeat</span>
+          <span><kbd className="font-mono text-text-2">⌫</kbd> delete</span>
+          <span><kbd className="font-mono text-text-2">M</kbd> cue</span>
+          <span><kbd className="font-mono text-text-2">L</kbd> loop selection</span>
           <span><kbd className="font-mono text-text-2">⌥</kbd> drag for fine positioning</span>
-          <span>Drag a selection onto the timeline · drag a library song onto a deck</span>
         </footer>
       </main>
       <Toast />

@@ -46,6 +46,22 @@ export function Icon({ name, size = 16 }: { name: string; size?: number }) {
       return <svg {...common}><path d="M17.5 19a4.5 4.5 0 000-9 6 6 0 00-11.6 1.5A3.75 3.75 0 006.5 19z" /></svg>;
     case "key":
       return <svg {...common}><circle cx="8" cy="15" r="4" /><path d="M10.9 12.1L21 2" /><path d="M17 6l3 3" /><path d="M14 9l3 3" /></svg>;
+    case "flag":
+      return <svg {...common}><path d="M5 21V4" /><path d="M5 4h12l-2 4 2 4H5" /></svg>;
+    case "undo":
+      return <svg {...common}><path d="M9 14L4 9l5-5" /><path d="M4 9h10a6 6 0 010 12h-3" /></svg>;
+    case "redo":
+      return <svg {...common}><path d="M15 14l5-5-5-5" /><path d="M20 9H10a6 6 0 000 12h3" /></svg>;
+    case "metronome":
+      return <svg {...common}><path d="M9 3h6l4 18H5z" /><path d="M12 14L18 5" /><path d="M8 14h8" /></svg>;
+    case "save":
+      return <svg {...common}><path d="M19 21H5a2 2 0 01-2-2V5a2 2 0 012-2h11l5 5v11a2 2 0 01-2 2z" /><path d="M17 21v-8H7v8" /><path d="M7 3v5h8" /></svg>;
+    case "share":
+      return <svg {...common}><circle cx="18" cy="5" r="3" /><circle cx="6" cy="12" r="3" /><circle cx="18" cy="19" r="3" /><path d="M8.6 13.5l6.8 4" /><path d="M15.4 6.5l-6.8 4" /></svg>;
+    case "folder":
+      return <svg {...common}><path d="M3 7a2 2 0 012-2h4l2 2h8a2 2 0 012 2v9a2 2 0 01-2 2H5a2 2 0 01-2-2z" /></svg>;
+    case "chev-down":
+      return <svg {...common}><path d="M6 9l6 6 6-6" /></svg>;
     case "zoom-in":
       return <svg {...common}><circle cx="11" cy="11" r="7" /><path d="M21 21l-4.3-4.3" /><path d="M11 8v6" /><path d="M8 11h6" /></svg>;
     case "zoom-out":

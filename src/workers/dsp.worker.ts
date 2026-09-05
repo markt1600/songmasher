@@ -1,4 +1,4 @@
-import { processChannels } from "@/lib/audio/stretch";
+import { processChannels, processChannelsFormant } from "@/lib/audio/stretch";
 import { quickStems } from "@/lib/audio/quickStems";
 
 interface WorkerScope {
@@ -8,14 +8,14 @@ interface WorkerScope {
 const ctx = self as unknown as WorkerScope;
 
 export type DspRequest =
-  | { type: "stretch"; id: string; channels: Float32Array[]; sampleRate: number; ratio: number; semitones: number }
+  | { type: "stretch"; id: string; channels: Float32Array[]; sampleRate: number; ratio: number; semitones: number; preserveFormants?: boolean }
   | { type: "quickStems"; id: string; channels: Float32Array[]; sampleRate: number };
 
 ctx.onmessage = (e: MessageEvent<DspRequest>) => {
   const msg = e.data;
   try {
     if (msg.type === "stretch") {
-      const out = processChannels(msg.channels, {
+      const out = (msg.preserveFormants ? processChannelsFormant : processChannels)(msg.channels, {
         ratio: msg.ratio,
         semitones: msg.semitones,
         sampleRate: msg.sampleRate,

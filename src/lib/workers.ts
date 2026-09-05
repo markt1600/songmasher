@@ -37,6 +37,7 @@ export function runStretch(
   ratio: number,
   semitones: number,
   onProgress?: (v: number) => void,
+  preserveFormants = false,
 ): Promise<Float32Array[]> {
   return new Promise((resolve, reject) => {
     const worker = new Worker(new URL("../workers/dsp.worker.ts", import.meta.url));
@@ -58,7 +59,7 @@ export function runStretch(
       reject(new Error(e.message || "dsp worker failed"));
     };
     worker.postMessage(
-      { type: "stretch", id, channels, sampleRate, ratio, semitones },
+      { type: "stretch", id, channels, sampleRate, ratio, semitones, preserveFormants },
       channels.map((c) => c.buffer),
     );
   });

@@ -1,6 +1,6 @@
 "use client";
 import { useEffect, useRef, useState } from "react";
-import { engine, useStore } from "@/lib/store";
+import { engine, useStore, type ExportOptions } from "@/lib/store";
 import { Icon, formatTime } from "./ui";
 import Spectrum from "./Spectrum";
 
@@ -10,7 +10,12 @@ export default function Header() {
   const previewDeck = useStore((s) => s.previewDeck);
   const busy = useStore((s) => s.busy);
   const decks = useStore((s) => s.decks);
-  const { play, pause, stop, toggleLoop, setMasterBpm, adoptDeckTempo, exportMix } = useStore();
+  const { play, pause, stop, toggleLoop, setMasterBpm, adoptDeckTempo, exportMix, toggleMetronome, toggleCountIn, undo, redo } = useStore();
+  const transport = useStore((s) => s.transport);
+  const canUndo = useStore((s) => s.canUndo);
+  const canRedo = useStore((s) => s.canRedo);
+  const [exportOpen, setExportOpen] = useState(false);
+  const [exportOpts, setExportOpts] = useState<ExportOptions>({ format: "wav", range: "all", normalize: true });
   const anyReady = decks.A.status === "ready" || decks.B.status === "ready";
   const [bpmDraft, setBpmDraft] = useState<string | null>(null);
   const timeRef = useRef<HTMLSpanElement>(null);
@@ -105,6 +110,20 @@ export default function Header() {
           <button onClick={toggleLoop} data-active={project.loop} title="Loop the arrangement">
             <Icon name="loop" size={13} />
           </button>
+          <button onClick={toggleMetronome} data-active={transport.metronome} title="Metronome click">
+            <Icon name="metronome" size={13} />
+          </button>
+          <button onClick={toggleCountIn} data-active={transport.countIn} title="One bar count-in before playback" className="font-mono text-[10.5px]">
+            1234
+          </button>
+        </div>
+        <div className="toolbar-group">
+          <button onClick={undo} disabled={!canUndo} title="Undo (⌘Z)">
+            <Icon name="undo" size={13} />
+          </button>
+          <button onClick={redo} disabled={!canRedo} title="Redo (⇧⌘Z)">
+            <Icon name="redo" size={13} />
+          </button>
         </div>
         <div className="font-mono text-[13px] tabular-nums leading-none text-right min-w-[64px] ml-1">
           <span ref={timeRef}>0:00.0</span>
@@ -114,9 +133,50 @@ export default function Header() {
           </div>
         </div>
 
-        <button className="btn ml-2" onClick={() => void exportMix()} disabled={!anyReady || !!busy} title="Render the arrangement to a WAV file">
-          <Icon name="download" size={13} /> <span className="hidden sm:inline">Export</span>
-        </button>
+        <div className="relative ml-2">
+          <button className="btn" onClick={() => setExportOpen((v) => !v)} disabled={!anyReady || !!busy} title="Render the arrangement to a file">
+            <Icon name="download" size={13} /> <span className="hidden sm:inline">Export</span> <Icon name="chev-down" size={11} />
+          </button>
+          {exportOpen && (
+            <div className="absolute right-0 top-[38px] z-40 w-[260px] rounded-[12px] border border-white/10 bg-[#16161d]/98 backdrop-blur-xl shadow-[0_16px_48px_rgba(0,0,0,0.6)] p-3 flex flex-col gap-3 fade-in" onPointerLeave={() => setExportOpen(false)}>
+              <div className="flex items-center justify-between">
+                <span className="label">Format</span>
+                <div className="seg">
+                  <button data-active={exportOpts.format === "wav"} onClick={() => setExportOpts({ ...exportOpts, format: "wav" })}>
+                    WAV
+                  </button>
+                  <button data-active={exportOpts.format === "mp3"} onClick={() => setExportOpts({ ...exportOpts, format: "mp3" })}>
+                    MP3
+                  </button>
+                </div>
+              </div>
+              <div className="flex items-center justify-between">
+                <span className="label">Range</span>
+                <div className="seg">
+                  <button data-active={exportOpts.range === "all"} onClick={() => setExportOpts({ ...exportOpts, range: "all" })}>
+                    Whole
+                  </button>
+                  <button data-active={exportOpts.range === "loop"} disabled={!project.loopRegion} onClick={() => setExportOpts({ ...exportOpts, range: "loop" })} title={project.loopRegion ? "Only the loop region" : "Set a loop region on the timeline ruler first"}>
+                    Loop region
+                  </button>
+                </div>
+              </div>
+              <label className="flex items-center justify-between cursor-pointer">
+                <span className="label">Normalise to −14 LUFS</span>
+                <input type="checkbox" checked={exportOpts.normalize} onChange={(e) => setExportOpts({ ...exportOpts, normalize: e.target.checked })} className="accent-[#7c6cff]" />
+              </label>
+              <button
+                className="btn btn-primary"
+                onClick={() => {
+                  setExportOpen(false);
+                  void exportMix(exportOpts);
+                }}
+              >
+                <Icon name="download" size={13} /> Export {exportOpts.format.toUpperCase()}
+              </button>
+            </div>
+          )}
+        </div>
       </div>
       <div className="h-[2px] w-full relative overflow-hidden">
         {busy && <div className="absolute inset-y-0 left-0 bg-gradient-to-r from-[#4fd1ff] via-[#9d8cff] to-[#ff5fa8] transition-[width] duration-200" style={{ width: `${Math.max(4, busy.value * 100)}%` }} />}

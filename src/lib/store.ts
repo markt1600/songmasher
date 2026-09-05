@@ -2,10 +2,12 @@
 import { create } from "zustand";
 import { barToTime, type SongAnalysis } from "./audio/analysis";
 import { audioBufferToChannels, channelsToAudioBuffer } from "./audio/wav";
+import { firstOnsetOffset } from "./audio/align";
 import { decodeArrayBuffer, decodeFile, getAudioContext, toMono } from "./engine/context";
 import { Engine, type EngineDecks } from "./engine/engine";
 import { runAnalysis, runQuickStems } from "./workers";
-import { CLIP_LANES, type Clip, type DeckId, type DeckState, type Foundation, type Project, type StemKey } from "./types";
+import { CLIP_LANES, emptyAutomation, type AutomationPoint, type Clip, type CuePoint, type DeckId, type DeckState, type Foundation, type LoopRegion, type Project, type StemKey, type TransportOptions } from "./types";
+import { playWindow } from "./engine/engine";
 import { computeSuggestions, type Suggestion, type SuggestionAction } from "./advisor";
 import { describeSong, sanitizePlan } from "./planRules";
 import * as lib from "./library";
@@ -80,6 +82,12 @@ export function regrid(a: SongAnalysis, bpm: number, firstDownbeat: number): Son
   return { ...a, bpm, beatInterval, firstDownbeat: fd, totalBars, barEnergy, barOnset, barVocal };
 }
 
+export interface ExportOptions {
+  format: "wav" | "mp3";
+  range: "all" | "loop";
+  normalize: boolean;
+}
+
 export interface AppConfig {
   loaded: boolean;
   ai: boolean;
@@ -106,7 +114,10 @@ interface Store {
   playing: boolean;
   previewDeck: DeckId | null;
   busy: { label: string; value: number } | null;
-  selectedClipId: string | null;
+  selectedClipIds: string[];
+  transport: TransportOptions;
+  canUndo: boolean;
+  canRedo: boolean;
   zoom: number; // px per beat
   config: AppConfig;
   suggestions: Suggestion[];
@@ -146,7 +157,26 @@ interface Store {
   updateClip: (id: string, patch: Partial<Clip>) => void;
   removeClip: (id: string) => void;
   clearClips: () => void;
-  selectClip: (id: string | null) => void;
+  selectClip: (id: string | null, opts?: { add?: boolean }) => void;
+  selectClips: (ids: string[]) => void;
+  selectAll: () => void;
+  removeSelected: () => void;
+  repeatSelected: () => void;
+  copySelected: () => void;
+  paste: () => void;
+  moveClips: (ids: string[], deltaBeats: number, deltaLane: number) => void;
+  nudgeClip: (id: string, ms: number) => void;
+  autoAlignClip: (id: string) => Promise<void>;
+  undo: () => void;
+  redo: () => void;
+  toggleMetronome: () => void;
+  toggleCountIn: () => void;
+  addCue: (beat?: number, label?: string) => void;
+  updateCue: (id: string, patch: Partial<CuePoint>) => void;
+  removeCue: (id: string) => void;
+  setLoopRegion: (region: LoopRegion | null) => void;
+  loopSelected: () => void;
+  setAutomation: (param: "level" | "filter", points: AutomationPoint[]) => void;
   setLengthBars: (n: number) => void;
   toggleLoop: () => void;
   setZoom: (z: number) => void;
@@ -159,7 +189,7 @@ interface Store {
   stop: () => void;
   seek: (sec: number) => void;
   previewSelection: (deckId: DeckId) => Promise<void>;
-  exportMix: () => Promise<void>;
+  exportMix: (opts?: ExportOptions) => Promise<void>;
   applySuggestion: (action: SuggestionAction) => void;
   askClaude: () => Promise<void>;
   applyClaudePlan: () => void;
@@ -457,13 +487,37 @@ export const useStore = create<Store>((set, get) => {
     }
   };
 
+  // ---- Undo / redo (snapshots of `project`, coalesced within 250 ms) ---------
+  const history = { past: [] as Project[], future: [] as Project[], lastAt: 0, lastKey: "", muted: false };
+  /** Every call is one undo step, except rapid repeats of the same `coalesce` key (slider drags). */
+  const setProject = (next: Project, coalesce?: string) => {
+    const prev = get().project;
+    if (prev === next) return;
+    if (!history.muted) {
+      const now = Date.now();
+      const merge = !!coalesce && coalesce === history.lastKey && now - history.lastAt < 600 && history.past.length > 0;
+      if (!merge) {
+        history.past.push(prev);
+        if (history.past.length > 100) history.past.shift();
+      }
+      history.lastAt = now;
+      history.lastKey = coalesce ?? "";
+      history.future = [];
+    }
+    set({ project: next, canUndo: history.past.length > 0, canRedo: history.future.length > 0 });
+  };
+  let clipboard: Clip[] = [];
+
   const storeImpl = {
     decks: { A: emptyDeck("A"), B: emptyDeck("B") },
-    project: { masterBpm: 120, foundation: null, clips: [], lengthBars: 16, loop: true },
+    project: { masterBpm: 120, foundation: null, clips: [], lengthBars: 16, loop: true, automation: emptyAutomation(), cues: [], loopRegion: null },
     playing: false,
     previewDeck: null,
     busy: null,
-    selectedClipId: null,
+    selectedClipIds: [],
+    transport: { metronome: false, countIn: false },
+    canUndo: false,
+    canRedo: false,
     zoom: 14,
     config: { loaded: false, ai: false, cloud: false, stems: false, needCode: false },
     suggestions: [],
@@ -639,14 +693,14 @@ export const useStore = create<Store>((set, get) => {
       set((s) => {
         const clips = s.project.clips.filter((c) => c.deckId !== deckId);
         const foundation = s.project.foundation?.deckId === deckId ? null : s.project.foundation;
-        return { decks: { ...s.decks, [deckId]: emptyDeck(deckId) }, project: { ...s.project, clips, foundation }, playing: false, previewDeck: null };
+        return { decks: { ...s.decks, [deckId]: emptyDeck(deckId) }, project: { ...s.project, clips, foundation }, playing: false, previewDeck: null, selectedClipIds: [] };
       });
       refreshSuggestions();
     },
 
     setMasterBpm: (bpm) => {
       const v = Math.max(40, Math.min(240, bpm));
-      set((s) => ({ project: { ...s.project, masterBpm: v } }));
+      setProject({ ...get().project, masterBpm: v });
       engine.invalidateAll();
       void restartIfPlaying();
     },
@@ -689,8 +743,8 @@ export const useStore = create<Store>((set, get) => {
         prev && prev.deckId === deckId ? prev : { deckId, stem: d.activeStem, startBar: 0, gain: 1 };
       const foundation = { ...base, ...patch };
       const masterBpm = prev?.deckId === deckId ? s.project.masterBpm : d.analysis.bpm;
-      set({ project: { ...s.project, foundation, masterBpm } });
       const onlyGain = !!prev && prev.deckId === deckId && patch && Object.keys(patch).every((k) => k === "gain");
+      setProject({ ...s.project, foundation, masterBpm }, onlyGain ? "foundation-gain" : undefined);
       if (onlyGain) {
         engine.setLevel("foundation", foundation.gain);
         return;
@@ -701,7 +755,7 @@ export const useStore = create<Store>((set, get) => {
     },
 
     clearFoundation: () => {
-      set((s) => ({ project: { ...s.project, foundation: null } }));
+      setProject({ ...get().project, foundation: null });
       void restartIfPlaying();
     },
 
@@ -739,7 +793,8 @@ export const useStore = create<Store>((set, get) => {
         mode: opts?.mode ?? "layer",
       };
       const clips = [...s.project.clips, clip];
-      set({ project: { ...s.project, clips, lengthBars: growToFit(clips, s.project.lengthBars) }, selectedClipId: clip.id });
+      setProject({ ...s.project, clips, lengthBars: growToFit(clips, s.project.lengthBars) });
+      set({ selectedClipIds: [clip.id] });
       void restartIfPlaying();
     },
 
@@ -753,15 +808,17 @@ export const useStore = create<Store>((set, get) => {
         x.lane === c.lane && x.startBeat >= copy.startBeat ? { ...x, startBeat: x.startBeat + c.lengthBeats } : x,
       );
       clips.push(copy);
-      set({ project: { ...s.project, clips, lengthBars: growToFit(clips, s.project.lengthBars) }, selectedClipId: copy.id });
+      setProject({ ...s.project, clips, lengthBars: growToFit(clips, s.project.lengthBars) });
+      set({ selectedClipIds: [copy.id] });
       void restartIfPlaying();
     },
 
     updateClip: (id, patch) => {
       const s = get();
       const clips = s.project.clips.map((c) => (c.id === id ? { ...c, ...patch } : c));
-      set({ project: { ...s.project, clips, lengthBars: growToFit(clips, s.project.lengthBars) } });
-      if (Object.keys(patch).every((k) => k === "gain") && typeof patch.gain === "number") {
+      const onlyGain = Object.keys(patch).every((k) => k === "gain") && typeof patch.gain === "number";
+      setProject({ ...s.project, clips, lengthBars: growToFit(clips, s.project.lengthBars) }, onlyGain ? `gain:${id}` : undefined);
+      if (onlyGain && typeof patch.gain === "number") {
         engine.setLevel(id, patch.gain);
         return;
       }
@@ -770,26 +827,197 @@ export const useStore = create<Store>((set, get) => {
 
     removeClip: (id) => {
       const s = get();
-      set({ project: { ...s.project, clips: s.project.clips.filter((c) => c.id !== id) }, selectedClipId: s.selectedClipId === id ? null : s.selectedClipId });
+      setProject({ ...s.project, clips: s.project.clips.filter((c) => c.id !== id) });
+      set({ selectedClipIds: s.selectedClipIds.filter((x) => x !== id) });
       void restartIfPlaying();
     },
 
     clearClips: () => {
-      set((s) => ({ project: { ...s.project, clips: [] }, selectedClipId: null }));
+      setProject({ ...get().project, clips: [] });
+      set({ selectedClipIds: [] });
       void restartIfPlaying();
     },
 
-    selectClip: (id) => set({ selectedClipId: id }),
+    selectClip: (id, opts) => {
+      if (id === null) {
+        set({ selectedClipIds: [] });
+        return;
+      }
+      const cur = get().selectedClipIds;
+      if (opts?.add) set({ selectedClipIds: cur.includes(id) ? cur.filter((x) => x !== id) : [...cur, id] });
+      else set({ selectedClipIds: [id] });
+    },
+
+    selectClips: (ids) => set({ selectedClipIds: ids }),
+
+    selectAll: () => set({ selectedClipIds: get().project.clips.map((c) => c.id) }),
+
+    removeSelected: () => {
+      const s = get();
+      if (s.selectedClipIds.length === 0) return;
+      const sel = new Set(s.selectedClipIds);
+      setProject({ ...s.project, clips: s.project.clips.filter((c) => !sel.has(c.id)) });
+      set({ selectedClipIds: [] });
+      void restartIfPlaying();
+    },
+
+    repeatSelected: () => {
+      const s = get();
+      if (s.selectedClipIds.length === 0) return;
+      const sel = s.project.clips.filter((c) => s.selectedClipIds.includes(c.id));
+      if (sel.length === 1) {
+        get().repeatClip(sel[0].id);
+        return;
+      }
+      // Repeat the whole selection as a block right after its end.
+      const start = Math.min(...sel.map((c) => c.startBeat));
+      const end = Math.max(...sel.map((c) => c.startBeat + c.lengthBeats));
+      const span = end - start;
+      const copies = sel.map((c) => ({ ...c, id: newId(), startBeat: c.startBeat + span }));
+      const clips = [...s.project.clips, ...copies];
+      setProject({ ...s.project, clips, lengthBars: growToFit(clips, s.project.lengthBars) });
+      set({ selectedClipIds: copies.map((c) => c.id) });
+      void restartIfPlaying();
+    },
+
+    copySelected: () => {
+      const s = get();
+      clipboard = s.project.clips.filter((c) => s.selectedClipIds.includes(c.id)).map((c) => ({ ...c }));
+      if (clipboard.length) get().showToast(`Copied ${clipboard.length} clip${clipboard.length === 1 ? "" : "s"}`);
+    },
+
+    paste: () => {
+      const s = get();
+      if (clipboard.length === 0) return;
+      const spb = 60 / s.project.masterBpm;
+      const at = Math.round(engine.position() / spb / 4) * 4;
+      const start = Math.min(...clipboard.map((c) => c.startBeat));
+      const copies = clipboard.map((c) => ({ ...c, id: newId(), startBeat: at + (c.startBeat - start) }));
+      const clips = [...s.project.clips, ...copies];
+      setProject({ ...s.project, clips, lengthBars: growToFit(clips, s.project.lengthBars) });
+      set({ selectedClipIds: copies.map((c) => c.id) });
+      void restartIfPlaying();
+    },
+
+    moveClips: (ids, deltaBeats, deltaLane) => {
+      const s = get();
+      const sel = new Set(ids);
+      const moving = s.project.clips.filter((c) => sel.has(c.id));
+      if (moving.length === 0) return;
+      const minStart = Math.min(...moving.map((c) => c.startBeat));
+      const db = Math.max(-minStart, deltaBeats);
+      const minLane = Math.min(...moving.map((c) => c.lane));
+      const maxLane = Math.max(...moving.map((c) => c.lane));
+      const dl = Math.max(1 - minLane, Math.min(CLIP_LANES - maxLane, deltaLane));
+      if (db === 0 && dl === 0) return;
+      const clips = s.project.clips.map((c) => (sel.has(c.id) ? { ...c, startBeat: c.startBeat + db, lane: c.lane + dl } : c));
+      setProject({ ...s.project, clips, lengthBars: growToFit(clips, s.project.lengthBars) });
+      void restartIfPlaying();
+    },
+
+    nudgeClip: (id, ms) => {
+      const c = get().project.clips.find((x) => x.id === id);
+      if (!c) return;
+      get().updateClip(id, { offsetMs: Math.max(-500, Math.min(500, Math.round((c.offsetMs ?? 0) + ms))) });
+    },
+
+    autoAlignClip: async (id) => {
+      const s = get();
+      const c = s.project.clips.find((x) => x.id === id);
+      if (!c) return;
+      const d = s.decks[c.deckId];
+      const buf = d.buffers[c.stem] ?? d.buffers.full;
+      if (!d.analysis || !buf) return;
+      const srcT = barToTime(d.analysis, c.srcBar);
+      const off = firstOnsetOffset(buf, srcT, d.analysis.beatInterval);
+      if (off === null) {
+        get().showToast("No clear onset found near the start of this clip");
+        return;
+      }
+      get().updateClip(id, { offsetMs: Math.round(off * 1000) });
+      get().showToast(`Aligned: first hit moved ${off >= 0 ? "+" : ""}${Math.round(off * 1000)} ms onto the beat`);
+    },
+
+    undo: () => {
+      const prev = history.past.pop();
+      if (!prev) return;
+      history.future.push(get().project);
+      history.muted = true;
+      set({ project: prev, canUndo: history.past.length > 0, canRedo: true, selectedClipIds: get().selectedClipIds.filter((id) => prev.clips.some((c) => c.id === id)) });
+      history.muted = false;
+      engine.invalidateAll();
+      void restartIfPlaying();
+    },
+
+    redo: () => {
+      const next = history.future.pop();
+      if (!next) return;
+      history.past.push(get().project);
+      history.muted = true;
+      set({ project: next, canUndo: true, canRedo: history.future.length > 0 });
+      history.muted = false;
+      engine.invalidateAll();
+      void restartIfPlaying();
+    },
+
+    toggleMetronome: () => {
+      set((s) => ({ transport: { ...s.transport, metronome: !s.transport.metronome } }));
+      void restartIfPlaying();
+    },
+
+    toggleCountIn: () => set((s) => ({ transport: { ...s.transport, countIn: !s.transport.countIn } })),
+
+    addCue: (beat, label) => {
+      const s = get();
+      const spb = 60 / s.project.masterBpm;
+      const b = Math.max(0, Math.round((beat ?? engine.position() / spb) * 4) / 4);
+      const cue: CuePoint = { id: newId(), beat: b, label: label ?? `Cue ${s.project.cues.length + 1}` };
+      setProject({ ...s.project, cues: [...s.project.cues, cue].sort((x, y) => x.beat - y.beat) });
+    },
+
+    updateCue: (id, patch) => {
+      const s = get();
+      setProject({ ...s.project, cues: s.project.cues.map((c) => (c.id === id ? { ...c, ...patch } : c)).sort((x, y) => x.beat - y.beat) });
+    },
+
+    removeCue: (id) => {
+      const s = get();
+      setProject({ ...s.project, cues: s.project.cues.filter((c) => c.id !== id) });
+    },
+
+    setLoopRegion: (region) => {
+      const s = get();
+      const r = region && region.endBeat - region.startBeat >= 1 ? { startBeat: Math.max(0, region.startBeat), endBeat: Math.min(s.project.lengthBars * 4, region.endBeat) } : null;
+      setProject({ ...s.project, loopRegion: r });
+      void restartIfPlaying();
+    },
+
+    loopSelected: () => {
+      const s = get();
+      const sel = s.project.clips.filter((c) => s.selectedClipIds.includes(c.id));
+      if (sel.length === 0) {
+        get().setLoopRegion(null);
+        return;
+      }
+      get().setLoopRegion({ startBeat: Math.min(...sel.map((c) => c.startBeat)), endBeat: Math.max(...sel.map((c) => c.startBeat + c.lengthBeats)) });
+    },
+
+    setAutomation: (param, points) => {
+      const s = get();
+      const sorted = [...points].sort((a, b) => a.beat - b.beat);
+      setProject({ ...s.project, automation: { ...s.project.automation, [param]: sorted } });
+      void restartIfPlaying();
+    },
 
     setLengthBars: (n) => {
       const s = get();
       const v = Math.max(1, Math.min(256, Math.round(n)));
-      set({ project: { ...s.project, lengthBars: growToFit(s.project.clips, v) } });
+      setProject({ ...s.project, lengthBars: growToFit(s.project.clips, v) });
       void restartIfPlaying();
     },
 
     toggleLoop: () => {
-      set((s) => ({ project: { ...s.project, loop: !s.project.loop } }));
+      setProject({ ...get().project, loop: !get().project.loop });
       void restartIfPlaying();
     },
 
@@ -912,7 +1140,7 @@ export const useStore = create<Store>((set, get) => {
       set({ previewDeck: null, busy: { label: "Syncing", value: 0 } });
       try {
         engine.onEnded = () => set({ playing: false });
-        await engine.play(s.project, decks, start, (label, value) => set({ busy: { label, value } }));
+        await engine.play(s.project, decks, start, s.transport, (label, value) => set({ busy: { label, value } }));
         set({ playing: true, busy: null });
       } catch (err) {
         set({ busy: null, playing: false });
@@ -950,11 +1178,14 @@ export const useStore = create<Store>((set, get) => {
         ],
         lengthBars: Math.max(1, d.selection.lengthBeats / 4),
         loop: true,
+        automation: emptyAutomation(),
+        cues: [],
+        loopRegion: null,
       };
       set({ busy: { label: "Syncing", value: 0 }, previewDeck: deckId });
       try {
         engine.onEnded = () => set({ playing: false, previewDeck: null });
-        await engine.play(project, decks, 0, (label, value) => set({ busy: { label, value } }));
+        await engine.play(project, decks, 0, { metronome: false, countIn: false }, (label, value) => set({ busy: { label, value } }));
         set({ playing: true, busy: null });
       } catch (err) {
         set({ busy: null, playing: false, previewDeck: null });
@@ -962,22 +1193,26 @@ export const useStore = create<Store>((set, get) => {
       }
     },
 
-    exportMix: async () => {
+    exportMix: async (opts) => {
+      const o: ExportOptions = { format: "wav", range: "all", normalize: false, ...opts };
       const s = get();
       const decks = engineDecks(s.decks);
       if (Object.keys(decks).length === 0) return;
       set({ busy: { label: "Rendering", value: 0 } });
       try {
-        const blob = await engine.render(s.project, decks, (label, value) => set({ busy: { label, value } }));
+        const win = o.range === "loop" && s.project.loopRegion ? playWindow(s.project) : { start: 0, end: playWindow({ ...s.project, loopRegion: null }).end };
+        const { channels, sampleRate } = await engine.renderRange(s.project, decks, win.start, win.end, (label, value) => set({ busy: { label, value } }));
+        const { finalizeMix } = await import("./audio/master");
+        const blob = await finalizeMix(channels, sampleRate, o, (label, value) => set({ busy: { label, value } }));
         const a = document.createElement("a");
         const names = ["A", "B"].map((id) => s.decks[id as DeckId].name).filter(Boolean).join(" x ") || "mashup";
         a.href = URL.createObjectURL(blob);
-        a.download = `${names} - SongMasher.wav`;
+        a.download = `${names} - SongMasher.${o.format}`;
         document.body.appendChild(a);
         a.click();
         a.remove();
         window.setTimeout(() => URL.revokeObjectURL(a.href), 10000);
-        get().showToast("Mashup exported as WAV");
+        get().showToast(`Mashup exported as ${o.format.toUpperCase()}`);
       } catch (err) {
         get().showToast(`Export failed: ${(err as Error).message}`);
       } finally {
@@ -1065,7 +1300,8 @@ export const useStore = create<Store>((set, get) => {
       if (plan.pitchShift) g.setDeckPitch(plan.pitchShift.deck, plan.pitchShift.semitones);
       const clips: Clip[] = checked.clips.map((c) => ({ ...c, id: newId() }));
       const st = get();
-      set({ project: { ...st.project, clips, lengthBars: growToFit(clips, 8) }, selectedClipId: null });
+      setProject({ ...st.project, clips, lengthBars: growToFit(clips, 8) });
+      set({ selectedClipIds: [] });
       g.showToast(checked.notes.length ? "Applied Claude's plan (with a few rule fixes)" : "Applied Claude's plan");
     },
   } satisfies Store;
