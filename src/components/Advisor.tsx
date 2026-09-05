@@ -14,6 +14,7 @@ export default function Advisor() {
   const claudeError = useStore((s) => s.claudeError);
   const { applySuggestion, askClaude, applyClaudePlan } = useStore();
   const bothReady = decks.A.status === "ready" && decks.B.status === "ready";
+  const missingStems = (["A", "B"] as const).filter((id) => decks[id].status === "ready" && !decks[id].buffers.vocals);
   if (suggestions.length === 0 && !config.ai) return null;
 
   return (
@@ -61,6 +62,11 @@ export default function Advisor() {
       )}
 
       {claudeError && <div className="text-[12px] text-[#ff6b61]">{claudeError}</div>}
+      {config.ai && bothReady && missingStems.length > 0 && !claudePlan && (
+        <div className="text-[11.5px] text-muted">
+          Tip: separate stems on deck {missingStems.join(" and ")} first (Quick or AI). With stems, the plan can put one song&apos;s vocal over the other&apos;s instrumental; without them it can only alternate sections.
+        </div>
+      )}
 
       {claudePlan && (
         <div className="rounded-[12px] border border-[#7c6cff]/30 bg-[#7c6cff]/10 p-4 flex flex-col gap-3 fade-in">
@@ -77,7 +83,7 @@ export default function Advisor() {
             <div className="rounded-lg bg-black/25 p-2.5">
               <div className="label mb-1">Foundation</div>
               <div>
-                Deck {claudePlan.foundation.deck} from bar {claudePlan.foundation.startBar + 1}
+                Deck {claudePlan.foundation.deck} · {claudePlan.foundation.stem} · from bar {claudePlan.foundation.startBar + 1}
               </div>
               <div className="text-muted mt-1">{claudePlan.foundation.reason}</div>
             </div>
@@ -109,6 +115,7 @@ export default function Advisor() {
                     <th className="pr-3 py-1 font-medium">Deck</th>
                     <th className="pr-3 py-1 font-medium">Source bars</th>
                     <th className="pr-3 py-1 font-medium">Stem</th>
+                    <th className="pr-3 py-1 font-medium">Mode</th>
                     <th className="pr-3 py-1 font-medium">Label</th>
                   </tr>
                 </thead>
@@ -123,11 +130,19 @@ export default function Advisor() {
                         {seg.srcBar + 1}–{seg.srcBar + seg.lengthBars}
                       </td>
                       <td className="pr-3 py-1">{seg.stem}</td>
+                      <td className="pr-3 py-1">{seg.mode === "swap" ? "swaps beat" : "layers"}</td>
                       <td className="pr-3 py-1">{seg.label}</td>
                     </tr>
                   ))}
                 </tbody>
               </table>
+            </div>
+          )}
+          {claudePlan.notes && claudePlan.notes.length > 0 && (
+            <div className="text-[11.5px] text-warn/90 leading-relaxed">
+              {claudePlan.notes.map((n, i) => (
+                <div key={i}>· {n}</div>
+              ))}
             </div>
           )}
           {claudePlan.tips.length > 0 && (

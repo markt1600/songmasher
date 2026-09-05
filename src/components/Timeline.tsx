@@ -3,6 +3,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { barToTime } from "@/lib/audio/analysis";
 import { engine, useStore } from "@/lib/store";
 import { CLIP_LANES, DECK_COLORS, STEM_LABELS, type Clip, type DeckId, type StemKey } from "@/lib/types";
+import { foundationIntervals } from "@/lib/engine/engine";
 import { Icon, Stepper } from "./ui";
 
 const LANE_H = 62;
@@ -77,6 +78,13 @@ export default function Timeline() {
               ))}
             </select>
             <input type="range" min={0} max={1.5} step={0.01} value={selected.gain} onChange={(e) => updateClip(selected.id, { gain: parseFloat(e.target.value) })} className="w-20" title="Clip level" />
+            <button
+              className={`btn btn-sm ${selected.mode === "swap" ? "text-warn border-warn/50" : ""}`}
+              onClick={() => updateClip(selected.id, { mode: selected.mode === "swap" ? "layer" : "swap" })}
+              title={selected.mode === "swap" ? "Swap: the foundation is muted while this clip plays. Click to layer it on top instead." : "Layer: plays over the foundation. Click to swap the foundation out while this clip plays."}
+            >
+              {selected.mode === "swap" ? "Swaps beat" : "Layers"}
+            </button>
             <button className="btn btn-sm" onClick={() => repeatClip(selected.id)} title="Repeat this clip right after itself (D)">
               <Icon name="repeat" size={12} /> Repeat
             </button>
@@ -156,7 +164,7 @@ export default function Timeline() {
 
             {/* Foundation block */}
             {project.foundation && foundationDeck?.analysis && (
-              <FoundationBlock deckId={project.foundation.deckId} startBar={project.foundation.startBar} zoom={zoom} widthBeats={totalBeats} masterBpm={project.masterBpm} onRemove={clearFoundation} onStartBar={(b) => setFoundation(project.foundation!.deckId, { startBar: b })} />
+              <FoundationBlock deckId={project.foundation.deckId} startBar={project.foundation.startBar} zoom={zoom} widthBeats={totalBeats} masterBpm={project.masterBpm} clips={project.clips} onRemove={clearFoundation} onStartBar={(b) => setFoundation(project.foundation!.deckId, { startBar: b })} />
             )}
 
             {/* Clips */}
@@ -215,7 +223,7 @@ function MiniWave({ deckId, srcBar, lengthBeats, width, height }: { deckId: Deck
   return <canvas ref={ref} style={{ width, height }} className="absolute inset-x-0 bottom-0 pointer-events-none opacity-70" />;
 }
 
-function FoundationBlock({ deckId, startBar, zoom, widthBeats, masterBpm, onRemove, onStartBar }: { deckId: DeckId; startBar: number; zoom: number; widthBeats: number; masterBpm: number; onRemove: () => void; onStartBar: (b: number) => void }) {
+function FoundationBlock({ deckId, startBar, zoom, widthBeats, masterBpm, clips, onRemove, onStartBar }: { deckId: DeckId; startBar: number; zoom: number; widthBeats: number; masterBpm: number; clips: Clip[]; onRemove: () => void; onStartBar: (b: number) => void }) {
   const deck = useStore((s) => s.decks[deckId]);
   const a = deck.analysis!;
   const color = DECK_COLORS[deckId];
@@ -223,6 +231,14 @@ function FoundationBlock({ deckId, startBar, zoom, widthBeats, masterBpm, onRemo
   const availableBeats = Math.max(0, ((a.duration - barToTime(a, startBar)) * ratio) / (60 / masterBpm));
   const beats = Math.min(widthBeats, availableBeats);
   const w = beats * zoom;
+  const audible = foundationIntervals(clips, beats);
+  const gaps: [number, number][] = [];
+  let cursor = 0;
+  for (const [a0, b0] of audible) {
+    if (a0 > cursor) gaps.push([cursor, a0]);
+    cursor = b0;
+  }
+  if (cursor < beats) gaps.push([cursor, beats]);
   return (
     <div
       className="clip cursor-default"
@@ -230,6 +246,14 @@ function FoundationBlock({ deckId, startBar, zoom, widthBeats, masterBpm, onRemo
       title={`${deck.name} from bar ${startBar + 1}`}
     >
       <MiniWave deckId={deckId} srcBar={startBar} lengthBeats={beats} width={w} height={LANE_H - 30} />
+      {gaps.map(([a0, b0]) => (
+        <div
+          key={a0}
+          className="absolute top-0 bottom-0 pointer-events-none"
+          style={{ left: a0 * zoom, width: (b0 - a0) * zoom, background: "repeating-linear-gradient(135deg, rgba(0,0,0,0.55) 0 6px, rgba(0,0,0,0.35) 6px 12px)" }}
+          title="Muted: a clip swaps the beat here"
+        />
+      ))}
       <div className="absolute top-1.5 left-2.5 right-2 flex items-center gap-2 text-[11px]">
         <span className="font-bold" style={{ color: color.main }}>
           {deckId}
@@ -296,6 +320,7 @@ function ClipView({ clip, zoom, selected, onSelect, onChange, onRepeat }: { clip
         height: LANE_H - 10,
         background: `linear-gradient(180deg, ${color.main}e6, ${color.main}99)`,
         borderColor: selected ? "white" : color.main,
+        borderStyle: clip.mode === "swap" ? "dashed" : "solid",
         opacity: clip.gain === 0 ? 0.4 : 1,
       }}
       onPointerDown={(e) => onPointerDown(e, "move")}
@@ -310,6 +335,7 @@ function ClipView({ clip, zoom, selected, onSelect, onChange, onRepeat }: { clip
         <span className="truncate">{deck.name}</span>
         <span className="font-mono tabular-nums opacity-70 shrink-0 text-[10px]">
           bar {clip.srcBar + 1} · {STEM_LABELS[clip.stem]}
+          {clip.mode === "swap" ? " · swap" : ""}
         </span>
       </div>
       <div className="handle" onPointerDown={(e) => onPointerDown(e, "resize")} />

@@ -8,13 +8,13 @@ Built with Next.js (App Router), TypeScript, Tailwind v4 and Zustand. Designed t
 
 - **Library** – every song you add is analysed once and saved with its analysis, grid and pitch corrections, and any Demucs stems. With a Vercel Blob store configured, the library lives in the cloud and follows you to any device; the browser keeps a local copy of what you've used so reloads are instant. Without Blob, the library is browser-only (IndexedDB). Pick a saved song for deck A or B from the strip at the top, add new files there, or delete songs you no longer want (a second click confirms, and the cloud copy goes too).
 - **Analysis on load** – tempo (with an octave sanity check), beat grid and downbeat, musical key with Camelot code, and per-bar energy / rhythm / vocal-presence curves. Runs in a worker, ~1 s per song.
-- **Foundation + clips** – one song plays continuously from a bar you choose; bars from either song become clips on three lanes. Clips are dragged, resized and repeated (double-click or `D`), and everything snaps to beats.
+- **Foundation + clips** – one song plays continuously from a bar you choose; bars from either song become clips on three lanes. Clips are dragged, resized and repeated (double-click or `D`), and everything snaps to beats. A clip either *layers* over the foundation (right for vocal or melodic stems) or *swaps* the foundation out while it plays (right for anything that brings its own drums), so you never end up with two beats at once.
 - **Beat alignment** – every clip and the foundation are time-stretched (WSOLA, pitch-preserving) to the master tempo and started on the exact bar boundary, so the beats line up.
 - **Key matching** – per-song pitch shift in semitones; the advisor tells you the smallest shift that makes the keys compatible.
 - **Stems**
   - *Quick stems* – instant vocal / instrumental split using centre-channel cancellation. Local, free, rough but useful.
   - *AI stems* – Demucs via Replicate: vocals, drums, bass + music, instrumental. Cloud, about 1–3 minutes, needs keys (below).
-- **Mash advisor** – local heuristics suggest which song should carry the beat, a tempo compromise, a key shift, and the best hook / breakdown bars. With an Anthropic key you can also ask Claude for a full arrangement plan and apply it in one click.
+- **Mash advisor** – local heuristics suggest which song should carry the beat, a tempo compromise, a key shift, and the best hook / breakdown bars. With an Anthropic key you can also ask Claude for a full arrangement plan and apply it in one click. Every plan passes through musical guard-rails (`src/lib/planRules.ts`): one beat at a time, never two lead vocals at once, instrumental foundation under a layered vocal, phrase-aligned positions. Run stems on both songs first for the best plans.
 - **Grid fixes** – halve / double tempo, nudge the downbeat by a beat, shift the grid by 10 ms.
 - **Export** – renders the arrangement offline to a 16-bit WAV.
 

@@ -7,6 +7,7 @@ import { Engine, type EngineDecks } from "./engine/engine";
 import { runAnalysis, runQuickStems } from "./workers";
 import { CLIP_LANES, type Clip, type DeckId, type DeckState, type Foundation, type Project, type StemKey } from "./types";
 import { computeSuggestions, type Suggestion, type SuggestionAction } from "./advisor";
+import { describeSong, sanitizePlan } from "./planRules";
 import * as lib from "./library";
 import type { LibrarySong } from "./library";
 import * as cloud from "./cloud";
@@ -90,11 +91,13 @@ export interface AppConfig {
 
 export interface ClaudePlan {
   summary: string;
-  foundation: { deck: DeckId; startBar: number; reason: string };
+  foundation: { deck: DeckId; startBar: number; stem: StemKey; reason: string };
   masterBpm: number;
   pitchShift: { deck: DeckId; semitones: number; reason: string } | null;
-  arrangement: { deck: DeckId; srcBar: number; lengthBars: number; startBar: number; lane: number; label: string; stem: StemKey }[];
+  arrangement: { deck: DeckId; srcBar: number; lengthBars: number; startBar: number; lane: number; label: string; stem: StemKey; mode: "layer" | "swap" }[];
   tips: string[];
+  /** edits the app's own rules made to the plan */
+  notes?: string[];
 }
 
 interface Store {
@@ -138,7 +141,7 @@ interface Store {
   setDeckStem: (deckId: DeckId, stem: StemKey) => void;
   setDeckPitch: (deckId: DeckId, semitones: number) => void;
   setSelection: (deckId: DeckId, sel: DeckState["selection"]) => void;
-  addClip: (deckId: DeckId, srcBar: number, lengthBeats: number, opts?: { lane?: number; startBeat?: number; stem?: StemKey }) => void;
+  addClip: (deckId: DeckId, srcBar: number, lengthBeats: number, opts?: { lane?: number; startBeat?: number; stem?: StemKey; mode?: "layer" | "swap" }) => void;
   repeatClip: (id: string) => void;
   updateClip: (id: string, patch: Partial<Clip>) => void;
   removeClip: (id: string) => void;
@@ -733,6 +736,7 @@ export const useStore = create<Store>((set, get) => {
         startBeat,
         lane: Math.max(1, Math.min(CLIP_LANES, lane)),
         gain: 1,
+        mode: opts?.mode ?? "layer",
       };
       const clips = [...s.project.clips, clip];
       set({ project: { ...s.project, clips, lengthBars: growToFit(clips, s.project.lengthBars) }, selectedClipId: clip.id });
@@ -984,15 +988,22 @@ export const useStore = create<Store>((set, get) => {
     applySuggestion: (action) => {
       const g = get();
       switch (action.type) {
-        case "setFoundation":
-          g.setFoundation(action.deckId, { startBar: action.startBar });
+        case "setFoundation": {
+          const d = g.decks[action.deckId];
+          g.setFoundation(action.deckId, { startBar: action.startBar, stem: d.buffers.instrumental ? "instrumental" : d.activeStem });
           break;
+        }
         case "setPitch":
           g.setDeckPitch(action.deckId, action.semitones);
           break;
-        case "addClip":
-          g.addClip(action.deckId, action.srcBar, action.lengthBeats);
+        case "addClip": {
+          // Prefer the vocal stem over the beat; a full mix can only take over, so it swaps the foundation out.
+          const d = g.decks[action.deckId];
+          const stem: StemKey = d.buffers.vocals ? "vocals" : d.activeStem;
+          const bringsDrums = stem === "full" || stem === "instrumental" || stem === "drums";
+          g.addClip(action.deckId, action.srcBar, action.lengthBeats, { stem, mode: bringsDrums && g.project.foundation ? "swap" : "layer" });
           break;
+        }
         case "halveTempo":
           g.scaleTempo(action.deckId, 0.5);
           break;
@@ -1011,7 +1022,6 @@ export const useStore = create<Store>((set, get) => {
         const d = s.decks[id];
         const a = d.analysis;
         if (!a) return null;
-        const r2 = (arr: Float32Array) => Array.from(arr).map((v) => Math.round(v * 100) / 100);
         return {
           deck: id,
           name: d.name,
@@ -1020,10 +1030,8 @@ export const useStore = create<Store>((set, get) => {
           camelot: a.key.camelot,
           durationSec: Math.round(a.duration),
           totalBars: a.totalBars,
-          barEnergy: r2(a.barEnergy),
-          barOnset: r2(a.barOnset),
-          barVocal: r2(a.barVocal),
           stems: Object.keys(d.buffers),
+          ...describeSong(a),
         };
       });
       set({ claudeBusy: true, claudeError: null });
@@ -1035,7 +1043,9 @@ export const useStore = create<Store>((set, get) => {
         });
         const j = await r.json();
         if (!r.ok) throw new Error(j.error ?? "Advisor failed");
-        set({ claudePlan: j.plan as ClaudePlan, claudeBusy: false });
+        const plan = j.plan as ClaudePlan;
+        const checked = sanitizePlan(plan, get().decks);
+        set({ claudePlan: { ...plan, notes: checked?.notes ?? [] }, claudeBusy: false });
       } catch (err) {
         set({ claudeBusy: false, claudeError: (err as Error).message });
       }
@@ -1048,29 +1058,15 @@ export const useStore = create<Store>((set, get) => {
       const g = get();
       engine.stop();
       set({ playing: false, previewDeck: null });
-      const fDeck = s.decks[plan.foundation.deck];
-      if (fDeck.analysis) g.setFoundation(plan.foundation.deck, { startBar: Math.max(0, Math.min(fDeck.analysis.totalBars - 1, plan.foundation.startBar)) });
+      const checked = sanitizePlan(plan, s.decks);
+      if (!checked) return;
+      g.setFoundation(checked.foundation.deckId, { startBar: checked.foundation.startBar, stem: checked.foundation.stem, gain: 1 });
       if (plan.masterBpm) g.setMasterBpm(plan.masterBpm);
       if (plan.pitchShift) g.setDeckPitch(plan.pitchShift.deck, plan.pitchShift.semitones);
-      const clips: Clip[] = [];
-      for (const seg of plan.arrangement) {
-        const d = s.decks[seg.deck];
-        if (!d.analysis) continue;
-        const stem: StemKey = d.buffers[seg.stem] ? seg.stem : "full";
-        clips.push({
-          id: newId(),
-          deckId: seg.deck,
-          stem,
-          srcBar: Math.max(0, Math.min(d.analysis.totalBars - 1, seg.srcBar)),
-          lengthBeats: Math.max(4, seg.lengthBars * 4),
-          startBeat: Math.max(0, seg.startBar * 4),
-          lane: Math.max(1, Math.min(CLIP_LANES, seg.lane || 1)),
-          gain: 1,
-        });
-      }
+      const clips: Clip[] = checked.clips.map((c) => ({ ...c, id: newId() }));
       const st = get();
       set({ project: { ...st.project, clips, lengthBars: growToFit(clips, 8) }, selectedClipId: null });
-      g.showToast("Applied Claude's plan");
+      g.showToast(checked.notes.length ? "Applied Claude's plan (with a few rule fixes)" : "Applied Claude's plan");
     },
   } satisfies Store;
 

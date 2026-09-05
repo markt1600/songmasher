@@ -6,6 +6,7 @@ export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 export const maxDuration = 60;
 
+const Window = z.object({ bar: z.number(), score: z.number() });
 const SongSchema = z.object({
   deck: z.enum(["A", "B"]),
   name: z.string().max(200),
@@ -14,17 +15,21 @@ const SongSchema = z.object({
   camelot: z.string(),
   durationSec: z.number(),
   totalBars: z.number(),
-  barEnergy: z.array(z.number()).max(600),
-  barOnset: z.array(z.number()).max(600),
-  barVocal: z.array(z.number()).max(600),
   stems: z.array(z.string()),
+  phrases: z.array(z.object({ bar: z.number(), energy: z.number(), beat: z.number(), vocal: z.number() })).max(400),
+  hooks: z.array(Window).max(5),
+  quietVocals: z.array(Window).max(5),
+  instrumentalGrooves: z.array(Window).max(5),
 });
+
+const StemEnum = z.enum(["full", "vocals", "instrumental", "drums", "melodic"]);
 
 const PlanSchema = z.object({
   summary: z.string(),
   foundation: z.object({
     deck: z.enum(["A", "B"]),
     startBar: z.number().int().min(0),
+    stem: StemEnum,
     reason: z.string(),
   }),
   masterBpm: z.number(),
@@ -43,35 +48,56 @@ const PlanSchema = z.object({
       startBar: z.number().int().min(0),
       lane: z.number().int().min(1).max(3),
       label: z.string(),
-      stem: z.enum(["full", "vocals", "instrumental", "drums", "melodic"]),
+      stem: StemEnum,
+      mode: z.enum(["layer", "swap"]),
     }),
   ),
   tips: z.array(z.string()).max(6),
 });
 
-const SYSTEM = `You are a mashup producer's assistant inside SongMasher, a browser mashup tool.
-You receive an automatic analysis of two songs: tempo, key (with Camelot code), and three per-bar curves
-(0..1, index = bar number starting at 0): barEnergy (loudness), barOnset (rhythmic/percussive strength),
-barVocal (mid-band centre energy, a rough proxy for vocals or lead melody).
+const SYSTEM = `You are the arrangement brain inside SongMasher, a two-song mashup tool. You get an automatic
+analysis of two songs and must return one concrete arrangement that a producer would actually build.
 
-The tool works like this:
-- One song is the "foundation": it plays continuously from a chosen start bar, tempo-matched to the master BPM.
-- Clips from either song (a source bar range, usually 4/8/16 bars) are placed on the timeline in bars, on 3 lanes,
-  and are time-stretched to the master BPM. Clips can use a stem: "full", or if the song's stems list includes them,
-  "vocals", "instrumental", "drums", "melodic".
-- Pitch shift is per song, in semitones, to make keys compatible (same or adjacent Camelot number, or relative major/minor).
+## How the tool plays things
+- The FOUNDATION is one song playing continuously from a chosen source bar, tempo-matched to the master BPM.
+  It carries the groove for the whole mashup. It can use a stem: "full" (whole mix) or, when that song lists
+  it under "stems", "instrumental" (no vocals), "drums", or "melodic" (bass + music, no drums).
+- CLIPS are bar ranges of either song placed on a bar timeline (three lanes). Each clip has a stem and a mode:
+  - mode "layer": plays ON TOP of the foundation. Only for stems with no drums: "vocals" or "melodic".
+  - mode "swap": the foundation is MUTED while the clip plays; the clip's own mix takes over. Use this for
+    "full", "instrumental" or "drums" clips, i.e. whenever the clip brings its own beat.
+- Bar numbers are 0-based in both the source songs and the timeline. Timeline positions must be multiples of 4.
 
-Produce a concrete, musically sensible plan:
-- Pick the foundation (usually the song with stronger, steadier barOnset) and a start bar where its groove is established
-  (skip quiet intros; prefer phrase boundaries that are multiples of 4 or 8 bars from the first loud section).
-- Master BPM: keep the foundation's BPM unless the other song needs more than ~8% stretch; then meet in the middle.
-  If the tempos are roughly a 2:1 ratio, treat them as the same feel and keep one BPM.
-- Pitch shift only if the keys clash; choose the smallest shift (|semitones| <= 3 preferred) that makes them compatible.
-- Arrangement: 8-32 bars total, on timeline bars that are multiples of 4. Use the other song's high-barVocal
-  sections as hooks (repeat them), quieter vocal passages as a breakdown, and leave the foundation alone for the first 4-8 bars
-  so the beat establishes itself. Use lane 1 for the main hook clips, lanes 2/3 for layered extras. Prefer the "vocals" stem
-  for hook clips when it is available, otherwise "full". Source bar ranges must stay inside each song's totalBars.
-- Keep the summary to 2-3 sentences and the tips practical (e.g. where to add a filter, when to drop the foundation gain).`;
+## The analysis you receive (per song)
+- bpm, key with Camelot code, totalBars, and which stems exist.
+- phrases: one row per 4-bar phrase with energy (loudness), beat (percussive strength) and vocal (lead
+  vocal / melody presence), all 0..1.
+- hooks: best 8-bar windows for a vocal hook (loud + vocal). quietVocals: sparse vocal passages.
+  instrumentalGrooves: 8-bar windows with a strong beat and little vocal. Prefer these precomputed windows;
+  they are aligned to phrase boundaries.
+
+## Hard rules (the app enforces them, so a plan that breaks them gets edited)
+1. Exactly one beat at a time. Never layer a clip that contains drums over the foundation.
+2. Never two lead vocals at once. Layered vocal clips must not overlap each other, and while one plays the
+   foundation must be "instrumental" (if that song has stems) or sit in one of its instrumentalGrooves.
+3. Source ranges stay inside totalBars. Lengths are 4, 8 or 16 bars. Timeline starts are multiples of 4.
+
+## What good looks like
+- Foundation: the song with the steadier, stronger beat. Start it at an instrumentalGroove, never in an intro
+  that is quiet. If both songs have stems, prefer foundation stem "instrumental" and the other song's "vocals".
+- Structure, typically 24-40 bars:
+  a. 4-8 bars of foundation alone to establish the groove.
+  b. The other song's hook as a layered "vocals" clip, 8 bars, then repeated once (two clips back to back).
+  c. A contrast section: either a "swap" clip of the other song's full mix (8 bars, its own beat takes over),
+     or a quietVocals passage layered over the foundation.
+  d. Return of the hook, then 4-8 bars of foundation alone to end.
+- Without stems: you cannot layer safely, so build a call-and-response using "swap" clips (8-bar sections
+  alternating between the two songs), and say in tips that running AI stems would unlock true layering.
+- Tempo: keep the foundation's BPM if the other song is within ~8%; otherwise pick a value between them.
+  If the tempos are near a 2:1 ratio, treat them as the same feel and keep the foundation's BPM.
+- Pitch: shift the non-foundation song only when the keys clash, by the smallest amount (prefer within +-3).
+- Labels are short ("Hook", "Hook again", "Breakdown", "Drop", "Outro"). Summary: 2-3 plain sentences.
+  Tips: 2-4 practical, specific pointers (e.g. "lower the foundation level to 0.8 under the hook").`;
 
 export async function POST(request: Request): Promise<Response> {
   if (!process.env.ANTHROPIC_API_KEY) return Response.json({ error: "ANTHROPIC_API_KEY is not set on the server" }, { status: 501 });
@@ -88,11 +114,11 @@ export async function POST(request: Request): Promise<Response> {
       model: "claude-opus-5",
       max_tokens: 8000,
       system: SYSTEM,
-      output_config: { format: zodOutputFormat(PlanSchema), effort: "medium" },
+      output_config: { format: zodOutputFormat(PlanSchema), effort: "high" },
       messages: [
         {
           role: "user",
-          content: `Here are the two analysed songs as JSON. Design the mashup plan.\n\n${JSON.stringify(songs)}`,
+          content: `Design the mashup for these two songs. Follow the hard rules exactly and use the precomputed windows.\n\n${JSON.stringify(songs)}`,
         },
       ],
     });

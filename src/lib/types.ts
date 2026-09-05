@@ -45,6 +45,8 @@ export interface Clip {
   startBeat: number;
   lane: number; // 1..CLIP_LANES
   gain: number; // 0..1.5
+  /** layer = play over the foundation; swap = the foundation is muted while this clip plays */
+  mode?: "layer" | "swap";
 }
 
 export interface Foundation {

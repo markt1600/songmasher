@@ -43,6 +43,24 @@ function cacheKey(deck: EngineDeck, stem: StemKey, masterBpm: number): string {
   return needs ? `${deck.id}:${stem}:${ratio.toFixed(5)}:${deck.semitones}` : `${deck.id}:${stem}:raw`;
 }
 
+/** Beat ranges where the foundation is audible: [0, end) minus every swap clip. */
+export function foundationIntervals(clips: Clip[], endBeat: number): [number, number][] {
+  const holes = clips
+    .filter((c) => c.mode === "swap" && c.lengthBeats > 0)
+    .map((c) => [c.startBeat, c.startBeat + c.lengthBeats] as [number, number])
+    .sort((x, y) => x[0] - y[0]);
+  const out: [number, number][] = [];
+  let cursor = 0;
+  for (const [h0, h1] of holes) {
+    if (h1 <= cursor) continue;
+    if (h0 > cursor) out.push([cursor, Math.min(h0, endBeat)]);
+    cursor = Math.max(cursor, h1);
+    if (cursor >= endBeat) break;
+  }
+  if (cursor < endBeat) out.push([cursor, endBeat]);
+  return out.filter(([a, b]) => b > a);
+}
+
 export function buildEvents(project: Project, decks: EngineDecks): PlayEvent[] {
   const spb = 60 / project.masterBpm;
   const events: PlayEvent[] = [];
@@ -52,18 +70,22 @@ export function buildEvents(project: Project, decks: EngineDecks): PlayEvent[] {
     const deck = decks[f.deckId]!;
     const ratio = stretchRatio(deck, project.masterBpm);
     const srcT = barToTime(deck.analysis, f.startBar);
-    const remaining = (deck.analysis.duration - srcT) * ratio;
-    const duration = Math.max(0, Math.min(totalBeats * spb, remaining));
-    if (duration > 0)
+    const remainingBeats = ((deck.analysis.duration - srcT) * ratio) / spb;
+    const endBeat = Math.max(0, Math.min(totalBeats, remainingBeats));
+    // The foundation runs continuously except where a "swap" clip takes over.
+    for (const [a, b] of foundationIntervals(project.clips, endBeat)) {
+      const duration = (b - a) * spb;
+      if (duration <= 0.01) continue;
       events.push({
         deckId: f.deckId,
         stem: f.stem,
         key: cacheKey(deck, f.stem, project.masterBpm),
-        startSec: 0,
+        startSec: a * spb,
         durationSec: duration,
-        bufferOffsetSec: srcT * ratio,
+        bufferOffsetSec: srcT * ratio + a * spb,
         gain: f.gain,
       });
+    }
   }
   for (const clip of project.clips) {
     const deck = decks[clip.deckId];
