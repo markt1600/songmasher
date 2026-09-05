@@ -4,6 +4,7 @@ import { useStore } from "@/lib/store";
 import { formatBytes, type LibrarySong } from "@/lib/library";
 import { DECK_COLORS, type DeckId } from "@/lib/types";
 import { Icon } from "./ui";
+import { beginDragOnMove } from "@/lib/dnd";
 
 function fmtDuration(sec: number): string {
   const m = Math.floor(sec / 60);
@@ -126,8 +127,13 @@ function SongCard({ song, cloud, loadedOn, confirming, onLoad, onDelete }: { son
   const synced = !!song.fileUrl;
   return (
     <div
-      className="relative shrink-0 w-[268px] rounded-[12px] inset p-3 flex flex-col gap-2 transition-[border-color,box-shadow] duration-150 fade-in"
+      className="relative shrink-0 w-[268px] rounded-[12px] inset p-3 flex flex-col gap-2 transition-[border-color,box-shadow] duration-150 fade-in cursor-grab active:cursor-grabbing"
       style={ring ? { borderColor: `${ring}88`, boxShadow: `0 0 0 1px ${ring}33` } : undefined}
+      title="Drag onto a deck to load it"
+      onPointerDown={(e) => {
+        if ((e.target as HTMLElement).closest("button")) return;
+        beginDragOnMove(e, { kind: "song", id: song.id, name: song.name });
+      }}
     >
       <div className="flex items-start gap-2">
         <div className="min-w-0 flex-1">

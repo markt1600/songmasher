@@ -7,6 +7,7 @@ import Timeline from "./Timeline";
 import Advisor from "./Advisor";
 import Library from "./Library";
 import Toast from "./Toast";
+import DragLayer from "./DragLayer";
 
 export default function Studio() {
   const loadConfig = useStore((s) => s.loadConfig);
@@ -68,9 +69,11 @@ export default function Studio() {
           <span><kbd className="font-mono text-text-2">D</kbd> repeat selected clip</span>
           <span><kbd className="font-mono text-text-2">⌫</kbd> remove clip</span>
           <span><kbd className="font-mono text-text-2">⌥</kbd> drag for fine positioning</span>
+          <span>Drag a selection onto the timeline · drag a library song onto a deck</span>
         </footer>
       </main>
       <Toast />
+      <DragLayer />
     </div>
   );
 }

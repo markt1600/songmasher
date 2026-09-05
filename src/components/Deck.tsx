@@ -1,5 +1,6 @@
 "use client";
-import { useCallback, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
+import { useDnd } from "@/lib/dnd";
 import { useStore } from "@/lib/store";
 import { DECK_COLORS, STEM_LABELS, type DeckId, type StemKey } from "@/lib/types";
 import { shiftedKey } from "@/lib/audio/music";
@@ -30,8 +31,24 @@ export default function Deck({ id }: { id: DeckId }) {
     setDeckBpm,
     separateQuick,
     separateAI,
+    loadFromLibrary,
   } = useStore();
   const [drag, setDrag] = useState(false);
+  const sectionRef = useRef<HTMLElement>(null);
+  const register = useDnd((s) => s.register);
+  const dndHover = useDnd((s) => (s.hover?.zone === `deck-${id}` ? s.hover.info : null));
+  useEffect(() => {
+    const el = sectionRef.current;
+    if (!el) return;
+    return register(`deck-${id}`, {
+      el,
+      accepts: ["song"],
+      resolve: (_x, _y, payload) => (payload.kind === "song" ? { deckId: id, label: `Load on deck ${id}` } : null),
+      onDrop: (payload) => {
+        if (payload.kind === "song") void loadFromLibrary(id, payload.id);
+      },
+    });
+  }, [id, register, loadFromLibrary]);
   const [showGrid, setShowGrid] = useState(false);
   const fileRef = useRef<HTMLInputElement>(null);
   const color = DECK_COLORS[id];
@@ -53,8 +70,9 @@ export default function Deck({ id }: { id: DeckId }) {
 
   return (
     <section
+      ref={sectionRef}
       className="panel p-4 flex flex-col gap-3 relative overflow-hidden transition-[border-color,box-shadow] duration-150"
-      style={drag ? { borderColor: color.main, boxShadow: `0 0 0 3px ${color.main}33` } : undefined}
+      style={drag || dndHover ? { borderColor: color.main, boxShadow: `0 0 0 3px ${color.main}33` } : undefined}
       onDragOver={(e) => {
         e.preventDefault();
         setDrag(true);

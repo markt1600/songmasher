@@ -3,6 +3,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { timeToBar, barToTime, type SongAnalysis } from "@/lib/audio/analysis";
 import { deckSourceTime, engine, useStore } from "@/lib/store";
 import { DECK_COLORS, type DeckId } from "@/lib/types";
+import { beginDragOnMove } from "@/lib/dnd";
 
 interface Props {
   deckId: DeckId;
@@ -18,6 +19,8 @@ export default function Waveform({ deckId, analysis, height = 168 }: Props) {
   const playheadRef = useRef<HTMLDivElement>(null);
   const selection = useStore((s) => s.decks[deckId].selection);
   const setSelection = useStore((s) => s.setSelection);
+  const deckName = useStore((s) => s.decks[deckId].name);
+  const activeStem = useStore((s) => s.decks[deckId].activeStem);
   const foundation = useStore((s) => s.project.foundation);
   const [width, setWidth] = useState(600);
   const dragRef = useRef<{ anchorBar: number; moved: boolean } | null>(null);
@@ -165,6 +168,11 @@ export default function Waveform({ deckId, analysis, height = 168 }: Props) {
   const onPointerDown = (e: React.PointerEvent) => {
     const rect = wrapRef.current!.getBoundingClientRect();
     const bar = Math.max(0, Math.min(analysis.totalBars - 1, xToBar(e.clientX - rect.left)));
+    if (selection && bar >= selection.startBar && bar < selection.startBar + selection.lengthBeats / 4) {
+      // Inside the current selection: drag it to the timeline (a plain click keeps the selection).
+      beginDragOnMove(e, { kind: "selection", deckId, srcBar: selection.startBar, lengthBeats: selection.lengthBeats, stem: activeStem, name: deckName });
+      return;
+    }
     dragRef.current = { anchorBar: bar, moved: false };
     (e.target as HTMLElement).setPointerCapture(e.pointerId);
     setSelection(deckId, { startBar: bar, lengthBeats: 4 });
@@ -199,8 +207,8 @@ export default function Waveform({ deckId, analysis, height = 168 }: Props) {
   return (
     <div
       ref={wrapRef}
-      className="relative w-full select-none rounded-[10px] overflow-hidden inset cursor-crosshair"
-      style={{ height, touchAction: "none" }}
+      className="relative w-full select-none rounded-[10px] overflow-hidden inset"
+      style={{ height, touchAction: "none", cursor: hoverBar !== null && selection && hoverBar >= selection.startBar && hoverBar < selection.startBar + selection.lengthBeats / 4 ? "grab" : "crosshair" }}
       onPointerDown={onPointerDown}
       onPointerMove={onPointerMove}
       onPointerUp={onPointerUp}
@@ -228,6 +236,7 @@ export default function Waveform({ deckId, analysis, height = 168 }: Props) {
         >
           <span className="absolute bottom-1.5 left-1.5 text-[10px] font-medium tabular-nums px-1.5 py-[2px] rounded-[5px] bg-black/75 text-white whitespace-nowrap border border-white/10">
             Bars {selection.startBar + 1}–{selection.startBar + selection.lengthBeats / 4} · {selection.lengthBeats / 4} bar{selection.lengthBeats > 4 ? "s" : ""}
+            <span className="opacity-60"> · drag to timeline</span>
           </span>
         </div>
       )}

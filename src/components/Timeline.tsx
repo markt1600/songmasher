@@ -4,6 +4,7 @@ import { barToTime } from "@/lib/audio/analysis";
 import { engine, useStore } from "@/lib/store";
 import { CLIP_LANES, DECK_COLORS, STEM_LABELS, type Clip, type DeckId, type StemKey } from "@/lib/types";
 import { foundationIntervals } from "@/lib/engine/engine";
+import { useDnd } from "@/lib/dnd";
 import { Icon, Stepper } from "./ui";
 
 const LANE_H = 62;
@@ -16,12 +17,52 @@ export default function Timeline() {
   const zoom = useStore((s) => s.zoom);
   const selectedClipId = useStore((s) => s.selectedClipId);
   const previewDeck = useStore((s) => s.previewDeck);
-  const { setZoom, selectClip, updateClip, removeClip, repeatClip, setLengthBars, seek, clearClips, setFoundation, clearFoundation } = useStore();
+  const { setZoom, selectClip, updateClip, removeClip, repeatClip, setLengthBars, seek, clearClips, setFoundation, clearFoundation, addClip } = useStore();
   const scrollRef = useRef<HTMLDivElement>(null);
+  const lanesRef = useRef<HTMLDivElement>(null);
+  const register = useDnd((s) => s.register);
+  const dropHover = useDnd((s) => (s.hover?.zone === "timeline" ? s.hover.info : null));
+  const dragPayload = useDnd((s) => s.payload);
   const playheadRef = useRef<HTMLDivElement>(null);
   const totalBeats = project.lengthBars * 4;
   const width = totalBeats * zoom;
   const spb = 60 / project.masterBpm;
+
+  useEffect(() => {
+    const el = lanesRef.current;
+    if (!el) return;
+    return register("timeline", {
+      el,
+      accepts: ["selection"],
+      resolve: (x, y, payload, altKey) => {
+        if (payload.kind !== "selection") return null;
+        const r = el.getBoundingClientRect();
+        const lane = Math.floor((y - r.top) / LANE_H);
+        if (lane < 0 || lane > CLIP_LANES) return null;
+        const rawBeat = Math.max(0, (x - r.left) / zoom - payload.lengthBeats / 2);
+        const snap = altKey ? 1 : 4;
+        const beat = Math.round(rawBeat / snap) * snap;
+        const bars = payload.lengthBeats / 4;
+        return lane === 0
+          ? { lane, beat: 0, label: `Foundation from bar ${payload.srcBar + 1}` }
+          : { lane, beat, label: `Lane ${lane} · bar ${Math.floor(beat / 4) + 1} · ${bars} bar${bars === 1 ? "" : "s"}` };
+      },
+      onDrop: (payload, info) => {
+        if (payload.kind !== "selection" || info.lane === undefined) return;
+        if (info.lane === 0) {
+          setFoundation(payload.deckId, { startBar: payload.srcBar, stem: payload.stem });
+          return;
+        }
+        const bringsDrums = payload.stem === "full" || payload.stem === "instrumental" || payload.stem === "drums";
+        addClip(payload.deckId, payload.srcBar, payload.lengthBeats, {
+          lane: info.lane,
+          startBeat: info.beat ?? 0,
+          stem: payload.stem,
+          mode: bringsDrums && useStore.getState().project.foundation ? "swap" : "layer",
+        });
+      },
+    });
+  }, [register, zoom, setFoundation, addClip]);
 
   useEffect(() => {
     let raf = 0;
@@ -152,7 +193,7 @@ export default function Timeline() {
           </div>
 
           {/* Grid background */}
-          <div className="absolute right-0 bottom-0" style={{ left: HEADER_W, top: RULER_H }}>
+          <div ref={lanesRef} className="absolute right-0 bottom-0" style={{ left: HEADER_W, top: RULER_H }}>
             {rulerMarks.map((m) => (
               <div key={m.beat} className="absolute top-0 bottom-0 border-l pointer-events-none" style={{ left: m.beat * zoom, borderColor: m.strong ? "rgba(255,255,255,0.1)" : "rgba(255,255,255,0.04)" }} />
             ))}
@@ -172,9 +213,27 @@ export default function Timeline() {
               <ClipView key={c.id} clip={c} zoom={zoom} selected={c.id === selectedClipId} onSelect={() => selectClip(c.id)} onChange={(p) => updateClip(c.id, p)} onRepeat={() => repeatClip(c.id)} />
             ))}
 
-            {!hasAnything && (
+            {/* Drop preview */}
+            {dropHover && dragPayload?.kind === "selection" && dropHover.lane !== undefined && (
+              <div
+                className="absolute rounded-[8px] border-2 border-dashed pointer-events-none z-[3]"
+                style={{
+                  left: dropHover.lane === 0 ? 0 : (dropHover.beat ?? 0) * zoom,
+                  width: dropHover.lane === 0 ? Math.max(totalBeats * zoom, 40) : dragPayload.lengthBeats * zoom,
+                  top: dropHover.lane * LANE_H + 5,
+                  height: LANE_H - 10,
+                  borderColor: DECK_COLORS[dragPayload.deckId].main,
+                  background: `${DECK_COLORS[dragPayload.deckId].main}33`,
+                }}
+              />
+            )}
+            {dragPayload?.kind === "selection" &&
+              Array.from({ length: 1 + CLIP_LANES }).map((_, i) => (
+                <div key={`hint-${i}`} className="absolute left-0 right-0 pointer-events-none" style={{ top: i * LANE_H, height: LANE_H, background: dropHover?.lane === i ? "rgba(255,255,255,0.04)" : "transparent", outline: "1px dashed rgba(255,255,255,0.12)", outlineOffset: -3 }} />
+              ))}
+            {!hasAnything && !dragPayload && (
               <div className="absolute inset-0 flex items-center justify-center text-[13px] text-muted pointer-events-none">
-                Load a song, then drag across its waveform and choose “Add to timeline”.
+                Select bars on a waveform, then drag them here or press “Add to timeline”.
               </div>
             )}
           </div>
