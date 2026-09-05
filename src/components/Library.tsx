@@ -106,7 +106,7 @@ function SongCard({ song, loadedOn, confirming, onLoad, onDelete }: { song: Libr
   const ring = loadedOn ? DECK_COLORS[loadedOn].main : undefined;
   return (
     <div
-      className="group relative shrink-0 w-[236px] rounded-[12px] inset p-3 flex flex-col gap-2 transition-[border-color,box-shadow] duration-150 fade-in"
+      className="group relative shrink-0 w-[260px] rounded-[12px] inset p-3 flex flex-col gap-2 transition-[border-color,box-shadow] duration-150 fade-in"
       style={ring ? { borderColor: `${ring}88`, boxShadow: `0 0 0 1px ${ring}33` } : undefined}
     >
       <div className="flex items-start gap-2">
@@ -114,7 +114,7 @@ function SongCard({ song, loadedOn, confirming, onLoad, onDelete }: { song: Libr
           <div className="text-[13px] font-semibold truncate tracking-[-0.01em]" title={song.name}>
             {song.name}
           </div>
-          <div className="text-[11px] text-muted mt-0.5 font-mono tabular-nums">
+          <div className="text-[11px] text-muted mt-0.5 font-mono tabular-nums truncate whitespace-nowrap">
             {song.bpm.toFixed(1)} BPM · {song.keyName} {song.camelot} · {fmtDuration(song.duration)}
           </div>
         </div>
