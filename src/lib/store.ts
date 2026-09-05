@@ -13,6 +13,7 @@ import { describeSong, sanitizePlan } from "./planRules";
 import { planMashup, type PlanCandidate, type PlanConstraints, type PlannerSong } from "./mash/planner";
 import * as lib from "./library";
 import type { LibraryMix, LibraryProject, LibrarySong } from "./library";
+import type { Section } from "./audio/sections";
 import * as cloud from "./cloud";
 import { AccessCodeError } from "./cloud";
 
@@ -197,6 +198,8 @@ interface Store {
   nudgeGridMs: (deckId: DeckId, ms: number) => void;
   scaleTempo: (deckId: DeckId, factor: number) => void;
   setDeckBpm: (deckId: DeckId, bpm: number) => void;
+  setSections: (deckId: DeckId, sections: Section[]) => void;
+  resetSections: (deckId: DeckId) => void;
   setFoundation: (deckId: DeckId, patch?: Partial<Foundation>) => void;
   clearFoundation: () => void;
   setDeckStem: (deckId: DeckId, stem: StemKey) => void;
@@ -286,17 +289,19 @@ export const useStore = create<Store>((set, get) => {
     set((s) => ({ decks: { ...s.decks, [deckId]: { ...s.decks[deckId], ...patch } } }));
 
   /** Recompute section labels for a deck's current grid (runs in a worker, updates when done). */
-  const refreshSections = async (deckId: DeckId) => {
+  const refreshSections = async (deckId: DeckId, force = false) => {
     const d = get().decks[deckId];
     const a = d.analysis;
     const full = d.buffers.full;
     if (!a || !full) return;
+    if (a.sectionsEdited && !force && a.sections && a.barChroma) return; // keep the user's edits
     const stamp = `${a.bpm}:${a.firstDownbeat}`;
     try {
       const { sections, barChroma } = await runSections(toMono(full), full.sampleRate, { firstDownbeat: a.firstDownbeat, beatInterval: a.beatInterval, totalBars: a.totalBars });
       const cur = get().decks[deckId].analysis;
       if (!cur || `${cur.bpm}:${cur.firstDownbeat}` !== stamp) return; // grid changed again meanwhile
-      const next = { ...cur, sections, barChroma };
+      const keepEdits = cur.sectionsEdited && cur.sections && !force;
+      const next = { ...cur, sections: keepEdits ? cur.sections : sections, sectionsEdited: keepEdits ? true : false, barChroma };
       if (get().decks[deckId].stemSource === "ai") void computeVocalProfile(deckId);
       setDeck(deckId, { analysis: next });
       const songId = get().decks[deckId].songId;
@@ -308,8 +313,11 @@ export const useStore = create<Store>((set, get) => {
 
   const applyAnalysis = (deckId: DeckId, analysis: SongAnalysis) => {
     engine.invalidateDeck(deckId);
-    setDeck(deckId, { analysis: { ...analysis, sections: undefined }, selection: null, vocal: null });
-    void refreshSections(deckId);
+    const prev = get().decks[deckId].analysis;
+    const barsUnchanged = !!prev && Math.abs(prev.bpm - analysis.bpm) < 1e-6 && prev.totalBars === analysis.totalBars;
+    const keep = barsUnchanged && prev?.sectionsEdited && prev.sections;
+    setDeck(deckId, { analysis: { ...analysis, sections: keep ? prev!.sections : undefined, sectionsEdited: keep ? true : false }, selection: null, vocal: null });
+    void refreshSections(deckId, !keep);
     const songId = get().decks[deckId].songId;
     if (songId) void persistSong(songId, { analysis, bpm: analysis.bpm, keyName: analysis.key.name, camelot: analysis.key.camelot });
     const s = get();
@@ -1242,6 +1250,26 @@ export const useStore = create<Store>((set, get) => {
     },
 
     setSelection: (deckId, sel) => setDeck(deckId, { selection: sel }),
+
+    setSections: (deckId, sections) => {
+      const d = get().decks[deckId];
+      if (!d.analysis) return;
+      const clean = [...sections]
+        .filter((x) => x.endBar > x.startBar)
+        .sort((x, y) => x.startBar - y.startBar)
+        .map((x, i) => ({ ...x, startBar: Math.max(0, Math.round(x.startBar)), endBar: Math.min(d.analysis!.totalBars, Math.round(x.endBar)), cluster: x.cluster ?? i }));
+      const next = { ...d.analysis, sections: clean, sectionsEdited: true };
+      setDeck(deckId, { analysis: next });
+      if (d.songId) void persistSong(d.songId, { analysis: next });
+      refreshSuggestions();
+    },
+
+    resetSections: (deckId) => {
+      const d = get().decks[deckId];
+      if (!d.analysis) return;
+      setDeck(deckId, { analysis: { ...d.analysis, sectionsEdited: false } });
+      void refreshSections(deckId, true);
+    },
 
     addClip: (deckId, srcBar, lengthBeats, opts) => {
       const s = get();

@@ -1,7 +1,7 @@
 "use client";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { timeToBar, barToTime, type SongAnalysis } from "@/lib/audio/analysis";
-import type { SectionLabel } from "@/lib/audio/sections";
+import SectionLane from "./SectionLane";
 import { deckSourceTime, engine, useStore } from "@/lib/store";
 import { DECK_COLORS, type DeckId } from "@/lib/types";
 import { beginDragOnMove } from "@/lib/dnd";
@@ -14,17 +14,8 @@ interface Props {
 }
 
 const RULER = 18;
-const SECTIONS_H = 16;
+const SECTIONS_H = 22;
 const TOP = RULER + SECTIONS_H;
-
-export const SECTION_COLORS: Record<SectionLabel, string> = {
-  Intro: "#8e8e99",
-  Verse: "#4fd1ff",
-  Chorus: "#ff5fa8",
-  Bridge: "#ffd60a",
-  Break: "#30d158",
-  Outro: "#8e8e99",
-};
 
 /** Bar position shown as "9" or "9.3" (bar.beat) when fractional. */
 export function fmtBar(bar: number): string {
@@ -182,23 +173,6 @@ export default function Waveform({ deckId, analysis, height = 176 }: Props) {
     drawEnvelope(columns.rms, 1.5);
     ctx.globalAlpha = 1;
 
-    // Sections band
-    for (const sec of analysis.sections ?? []) {
-      const x0 = xOf(barToTime(analysis, sec.startBar));
-      const x1 = xOf(barToTime(analysis, sec.endBar));
-      if (x1 < 0 || x0 > width) continue;
-      const c = SECTION_COLORS[sec.label];
-      ctx.fillStyle = `${c}33`;
-      ctx.fillRect(x0, RULER, x1 - x0, SECTIONS_H);
-      ctx.fillStyle = `${c}aa`;
-      ctx.fillRect(x0, RULER + SECTIONS_H - 2, x1 - x0, 2);
-      if (x1 - x0 > 40) {
-        ctx.fillStyle = "rgba(255,255,255,0.85)";
-        ctx.font = "600 9px -apple-system, BlinkMacSystemFont, sans-serif";
-        ctx.fillText(sec.label.toUpperCase(), Math.max(x0, 0) + 4, RULER + 11);
-      }
-    }
-
     // Beat grid + ruler labels
     const firstBeat = Math.max(0, Math.floor((view.start - analysis.firstDownbeat) / analysis.beatInterval));
     const lastBeat = Math.floor((view.end - analysis.firstDownbeat) / analysis.beatInterval) + 1;
@@ -293,13 +267,7 @@ export default function Waveform({ deckId, analysis, height = 176 }: Props) {
     const rect = wrapRef.current!.getBoundingClientRect();
     const x = e.clientX - rect.left;
     const y = e.clientY - rect.top;
-    // Section band: click selects the whole section
-    if (y >= RULER && y < TOP) {
-      const bar = timeToBar(analysis, tOf(x));
-      const sec = (analysis.sections ?? []).find((s) => bar >= s.startBar && bar < s.endBar);
-      if (sec) setSelection(deckId, { startBar: sec.startBar, lengthBeats: (sec.endBar - sec.startBar) * 4 });
-      return;
-    }
+    if (y >= RULER && y < TOP) return; // section lane handles its own pointer events
     const bar = xToBar(x);
     if (selection && bar >= selection.startBar && bar < selection.startBar + selection.lengthBeats / 4) {
       beginDragOnMove(e, { kind: "selection", deckId, srcBar: selection.startBar, lengthBeats: selection.lengthBeats, stem: activeStem, name: deckName });
@@ -346,13 +314,14 @@ export default function Waveform({ deckId, analysis, height = 176 }: Props) {
       <div
         ref={wrapRef}
         className="relative w-full select-none rounded-[10px] overflow-hidden inset"
-        style={{ height, touchAction: "none", cursor: hoverBar !== null && selection && hoverBar >= selection.startBar && hoverBar < selection.startBar + selection.lengthBeats / 4 ? "grab" : "crosshair" }}
+        style={{ height: height + 6, touchAction: "none", cursor: hoverBar !== null && selection && hoverBar >= selection.startBar && hoverBar < selection.startBar + selection.lengthBeats / 4 ? "grab" : "crosshair" }}
         onPointerDown={onPointerDown}
         onPointerMove={onPointerMove}
         onPointerUp={onPointerUp}
         onPointerLeave={() => setHoverBar(null)}
       >
         <canvas ref={canvasRef} style={{ width, height }} className="absolute inset-0" />
+        <SectionLane deckId={deckId} analysis={analysis} deckName={deckName} stem={activeStem} xOf={xOf} tOf={tOf} width={width} top={RULER} height={SECTIONS_H} />
         {isFoundation && fLeft >= 0 && fLeft <= width && (
           <div className="absolute bottom-0 pointer-events-none border-l border-dashed" style={{ left: fLeft, top: TOP, borderColor: color.main }}>
             <span className="absolute top-1 left-1 text-[9.5px] font-semibold px-1.5 py-[1px] rounded-[4px] whitespace-nowrap" style={{ background: color.main, color: "#000" }}>

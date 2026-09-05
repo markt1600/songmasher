@@ -23,6 +23,8 @@ export interface SongAnalysis {
   totalBars: number;
   /** Structural sections (intro / verse / chorus ...), on the same bar grid */
   sections?: Section[];
+  /** true once the user has edited the sections by hand (auto-detection then leaves them alone) */
+  sectionsEdited?: boolean;
   /** 12 x totalBars pitch-class distribution of the full mix per bar (harmony), each bar summing to 1 */
   barChroma?: Float32Array;
 }

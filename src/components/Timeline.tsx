@@ -6,6 +6,7 @@ import { CLIP_LANES, DECK_COLORS, STEM_LABELS, type AutomationPoint, type Clip, 
 import { automationValue, foundationIntervals } from "@/lib/engine/engine";
 import { useDnd } from "@/lib/dnd";
 import { Icon, Stepper } from "./ui";
+import { SECTION_COLORS } from "./SectionLane";
 
 const LANE_H = 62;
 const AUTO_H = 56;
@@ -518,6 +519,18 @@ function FoundationBlock({ deckId, startBar, zoom, widthBeats, masterBpm, clips,
       {gaps.map(([a0, b0]) => (
         <div key={a0} className="absolute top-0 bottom-0 pointer-events-none" style={{ left: a0 * zoom, width: (b0 - a0) * zoom, background: "repeating-linear-gradient(135deg, rgba(0,0,0,0.55) 0 6px, rgba(0,0,0,0.35) 6px 12px)" }} title="Muted: a clip swaps the beat here" />
       ))}
+      {/* Song structure of the foundation along the timeline */}
+      {(a.sections ?? []).map((sec, i) => {
+        const b0 = Math.max(0, (sec.startBar - startBar) * 4);
+        const b1 = Math.min(beats, (sec.endBar - startBar) * 4);
+        if (b1 <= 0 || b0 >= beats || b1 - b0 <= 0) return null;
+        const c = SECTION_COLORS[sec.label] ?? "#8e8e99";
+        return (
+          <div key={i} className="absolute bottom-0 h-[14px] pointer-events-none overflow-hidden" style={{ left: b0 * zoom, width: (b1 - b0) * zoom, background: `${c}33`, boxShadow: `inset 0 -2px 0 ${c}`, borderLeft: `1px solid ${c}66` }}>
+            {(b1 - b0) * zoom > 40 && <span className="absolute left-1 top-0 text-[8.5px] font-semibold uppercase tracking-[0.04em] text-white/85">{sec.label}</span>}
+          </div>
+        );
+      })}
       <div className="absolute top-1.5 left-2.5 right-2 flex items-center gap-2 text-[11px]">
         <span className="font-bold" style={{ color: color.main }}>
           {deckId}

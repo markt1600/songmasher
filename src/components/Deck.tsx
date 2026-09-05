@@ -29,6 +29,7 @@ export default function Deck({ id }: { id: DeckId }) {
     nudgeGridMs,
     scaleTempo,
     setDeckBpm,
+    resetSections,
     separateQuick,
     separateAI,
     loadFromLibrary,
@@ -308,6 +309,9 @@ export default function Deck({ id }: { id: DeckId }) {
               </button>
               <button className="btn btn-sm" onClick={() => nudgeGridMs(id, 10)} title="Shift the whole grid 10 ms later">
                 +10 ms
+              </button>
+              <button className="btn btn-sm ml-2" onClick={() => resetSections(id)} title="Discard manual section edits and detect the structure again">
+                Re-detect sections
               </button>
               <span className="text-muted ml-auto font-mono tabular-nums text-[11px]">offset {(a.firstDownbeat * 1000).toFixed(0)} ms</span>
             </div>

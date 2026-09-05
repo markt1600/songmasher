@@ -11,7 +11,37 @@ export interface Section {
   label: SectionLabel;
   cluster: number;
 }
-export type SectionLabel = "Intro" | "Verse" | "Chorus" | "Bridge" | "Break" | "Outro";
+export type SectionLabel = "Intro" | "Verse" | "Pre-chorus" | "Chorus" | "Bridge" | "Break" | "Outro";
+export const SECTION_LABELS: SectionLabel[] = ["Intro", "Verse", "Pre-chorus", "Chorus", "Bridge", "Break", "Outro"];
+
+/**
+ * The hook: the strongest chorus (loudest singing), trimmed to its best 8 bars when longer.
+ * Uses the vocal-stem energy when available, otherwise the full-mix proxy.
+ */
+export function hookRange(sections: Section[], barEnergy: ArrayLike<number>, barVocal: ArrayLike<number>): { startBar: number; endBar: number } | null {
+  const choruses = sections.filter((s) => s.label === "Chorus");
+  const pool = choruses.length ? choruses : sections.filter((s) => s.label !== "Intro" && s.label !== "Outro" && s.label !== "Break");
+  if (pool.length === 0) return null;
+  const score = (b0: number, b1: number) => {
+    let s = 0;
+    for (let b = b0; b < b1; b++) s += (barEnergy[b] ?? 0) * 0.4 + (barVocal[b] ?? 0) * 0.6;
+    return b1 > b0 ? s / (b1 - b0) : 0;
+  };
+  let best: { startBar: number; endBar: number; v: number } | null = null;
+  for (const sec of pool) {
+    const len = sec.endBar - sec.startBar;
+    if (len <= 8) {
+      const v = score(sec.startBar, sec.endBar);
+      if (!best || v > best.v) best = { startBar: sec.startBar, endBar: sec.endBar, v };
+    } else {
+      for (let b = sec.startBar; b + 8 <= sec.endBar; b += 4) {
+        const v = score(b, b + 8);
+        if (!best || v > best.v) best = { startBar: b, endBar: b + 8, v };
+      }
+    }
+  }
+  return best ? { startBar: best.startBar, endBar: best.endBar } : null;
+}
 
 export interface GridForSections {
   firstDownbeat: number;
