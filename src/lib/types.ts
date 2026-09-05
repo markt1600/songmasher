@@ -1,4 +1,5 @@
 import type { SongAnalysis } from "./audio/analysis";
+import type { VocalProfile } from "./audio/vocal";
 
 export type DeckId = "A" | "B";
 export type StemKey = "full" | "vocals" | "instrumental" | "drums" | "melodic";
@@ -29,6 +30,8 @@ export interface DeckState {
   stemBusy: boolean;
   stemProgress: string;
   analysis: SongAnalysis | null;
+  /** from the isolated vocal stem, when AI stems exist */
+  vocal: VocalProfile | null;
   activeStem: StemKey;
   selection: { startBar: number; lengthBeats: number } | null;
   semitones: number;

@@ -5,6 +5,7 @@
  * can be reloaded instantly without re-analysing or re-separating it.
  */
 import type { SongAnalysis } from "./audio/analysis";
+import type { VocalProfile } from "./audio/vocal";
 import type { DeckId, Project, StemKey, StemSource } from "./types";
 
 export const AI_STEM_KEYS = ["vocals", "drums", "bass", "other"] as const;
@@ -35,6 +36,8 @@ export interface LibrarySong {
   stemUrls?: Partial<Record<AiStemKey, string>>;
   /** true when this record came from (or is synced to) the cloud library */
   cloud?: boolean;
+  /** derived from the Demucs vocal stem: phrases, per-bar vocal energy, melody chroma */
+  vocal?: VocalProfile | null;
 }
 
 interface StoredFile {

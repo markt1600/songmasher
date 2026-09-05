@@ -1,5 +1,6 @@
 import type { SongAnalysis, AnalysisProgress } from "./audio/analysis";
 import type { Section } from "./audio/sections";
+import type { VocalProfile } from "./audio/vocal";
 
 let seq = 0;
 const nextId = () => `job${++seq}`;
@@ -92,7 +93,7 @@ export function runQuickStems(
   });
 }
 
-export function runSections(mono: Float32Array, sampleRate: number, grid: { firstDownbeat: number; beatInterval: number; totalBars: number }): Promise<Section[]> {
+export function runSections(mono: Float32Array, sampleRate: number, grid: { firstDownbeat: number; beatInterval: number; totalBars: number }): Promise<{ sections: Section[]; barChroma: Float32Array }> {
   return new Promise((resolve, reject) => {
     const worker = new Worker(new URL("../workers/analysis.worker.ts", import.meta.url));
     const id = nextId();
@@ -101,7 +102,7 @@ export function runSections(mono: Float32Array, sampleRate: number, grid: { firs
       if (msg.id !== id) return;
       if (msg.type === "result") {
         worker.terminate();
-        resolve(msg.sections as Section[]);
+        resolve({ sections: msg.sections as Section[], barChroma: msg.barChroma as Float32Array });
       } else if (msg.type === "error") {
         worker.terminate();
         reject(new Error(msg.message));
@@ -112,5 +113,28 @@ export function runSections(mono: Float32Array, sampleRate: number, grid: { firs
       reject(new Error(e.message || "sections worker failed"));
     };
     worker.postMessage({ type: "sections", id, mono, sampleRate, grid }, [mono.buffer]);
+  });
+}
+
+export function runVocalProfile(mono: Float32Array, sampleRate: number, grid: { firstDownbeat: number; beatInterval: number; totalBars: number }): Promise<VocalProfile> {
+  return new Promise((resolve, reject) => {
+    const worker = new Worker(new URL("../workers/analysis.worker.ts", import.meta.url));
+    const id = nextId();
+    worker.onmessage = (e) => {
+      const msg = e.data;
+      if (msg.id !== id) return;
+      if (msg.type === "result") {
+        worker.terminate();
+        resolve(msg.profile as VocalProfile);
+      } else if (msg.type === "error") {
+        worker.terminate();
+        reject(new Error(msg.message));
+      }
+    };
+    worker.onerror = (e) => {
+      worker.terminate();
+      reject(new Error(e.message || "vocal worker failed"));
+    };
+    worker.postMessage({ type: "vocal", id, mono, sampleRate, grid }, [mono.buffer]);
   });
 }

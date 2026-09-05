@@ -14,20 +14,20 @@ export class AccessCodeError extends Error {
 
 type Wire = Omit<LibrarySong, "analysis"> & { analysis: Record<string, unknown> };
 
-const F32_KEYS: (keyof SongAnalysis)[] = ["peaks", "rms", "barEnergy", "barOnset", "barVocal"];
+const F32_KEYS: (keyof SongAnalysis)[] = ["peaks", "rms", "barEnergy", "barOnset", "barVocal", "barChroma"];
 
 export function serializeSong(song: LibrarySong): Wire {
   const a: Record<string, unknown> = { ...song.analysis };
   for (const k of F32_KEYS) {
-    const arr = song.analysis[k] as Float32Array;
-    a[k] = Array.from(arr).map((v) => Math.round(v * 10000) / 10000);
+    const arr = song.analysis[k] as Float32Array | undefined;
+    if (arr) a[k] = Array.from(arr).map((v) => Math.round(v * 10000) / 10000);
   }
   return { ...song, analysis: a };
 }
 
 export function deserializeSong(w: Wire): LibrarySong {
   const a = { ...w.analysis } as Record<string, unknown>;
-  for (const k of F32_KEYS) a[k] = Float32Array.from((a[k] as number[]) ?? []);
+  for (const k of F32_KEYS) if (a[k] !== undefined) a[k] = Float32Array.from((a[k] as number[]) ?? []);
   return { ...w, analysis: a as unknown as SongAnalysis, cloud: true };
 }
 

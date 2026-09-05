@@ -5,11 +5,12 @@ import { audioBufferToChannels, channelsToAudioBuffer } from "./audio/wav";
 import { firstOnsetOffset } from "./audio/align";
 import { decodeArrayBuffer, decodeFile, getAudioContext, toMono } from "./engine/context";
 import { Engine, type EngineDecks } from "./engine/engine";
-import { runAnalysis, runQuickStems, runSections } from "./workers";
+import { runAnalysis, runQuickStems, runSections, runVocalProfile } from "./workers";
 import { CLIP_LANES, emptyAutomation, type AutomationPoint, type Clip, type CuePoint, type DeckId, type DeckState, type DemucsVariant, type Foundation, type LoopRegion, type Project, type StemKey, type TransportOptions } from "./types";
 import { playWindow } from "./engine/engine";
 import { computeSuggestions, type Suggestion, type SuggestionAction } from "./advisor";
 import { describeSong, sanitizePlan } from "./planRules";
+import { planMashup, type PlanCandidate, type PlanConstraints, type PlannerSong } from "./mash/planner";
 import * as lib from "./library";
 import type { LibraryMix, LibraryProject, LibrarySong } from "./library";
 import * as cloud from "./cloud";
@@ -36,6 +37,7 @@ function emptyDeck(id: DeckId): DeckState {
     stemBusy: false,
     stemProgress: "",
     analysis: null,
+    vocal: null,
     activeStem: "full",
     selection: null,
     semitones: 0,
@@ -121,6 +123,14 @@ export interface ClaudePlan {
   notes?: string[];
 }
 
+export interface ClaudeNotes {
+  summary: string;
+  tips: string[];
+  clipLabels: string[];
+  stemAdvice: { deck: DeckId; variant: DemucsVariant; reason: string }[];
+  choice: string | null;
+}
+
 interface Store {
   decks: Record<DeckId, DeckState>;
   project: Project;
@@ -137,6 +147,17 @@ interface Store {
   claudePlan: ClaudePlan | null;
   claudeBusy: boolean;
   claudeError: string | null;
+  /** planner output */
+  candidates: PlanCandidate[];
+  selectedCandidateId: string | null;
+  planConstraints: PlanConstraints;
+  claudeNotes: ClaudeNotes | null;
+  auditioning: boolean;
+  planMashup: (constraints?: PlanConstraints) => PlanCandidate[];
+  selectCandidate: (id: string) => void;
+  auditionCandidate: (id: string) => Promise<void>;
+  stopAudition: () => void;
+  applyCandidate: (id: string) => void;
   toast: string | null;
   accessCode: string;
   library: LibrarySong[];
@@ -272,10 +293,11 @@ export const useStore = create<Store>((set, get) => {
     if (!a || !full) return;
     const stamp = `${a.bpm}:${a.firstDownbeat}`;
     try {
-      const sections = await runSections(toMono(full), full.sampleRate, { firstDownbeat: a.firstDownbeat, beatInterval: a.beatInterval, totalBars: a.totalBars });
+      const { sections, barChroma } = await runSections(toMono(full), full.sampleRate, { firstDownbeat: a.firstDownbeat, beatInterval: a.beatInterval, totalBars: a.totalBars });
       const cur = get().decks[deckId].analysis;
       if (!cur || `${cur.bpm}:${cur.firstDownbeat}` !== stamp) return; // grid changed again meanwhile
-      const next = { ...cur, sections };
+      const next = { ...cur, sections, barChroma };
+      if (get().decks[deckId].stemSource === "ai") void computeVocalProfile(deckId);
       setDeck(deckId, { analysis: next });
       const songId = get().decks[deckId].songId;
       if (songId) void persistSong(songId, { analysis: next });
@@ -286,7 +308,7 @@ export const useStore = create<Store>((set, get) => {
 
   const applyAnalysis = (deckId: DeckId, analysis: SongAnalysis) => {
     engine.invalidateDeck(deckId);
-    setDeck(deckId, { analysis: { ...analysis, sections: undefined }, selection: null });
+    setDeck(deckId, { analysis: { ...analysis, sections: undefined }, selection: null, vocal: null });
     void refreshSections(deckId);
     const songId = get().decks[deckId].songId;
     if (songId) void persistSong(songId, { analysis, bpm: analysis.bpm, keyName: analysis.key.name, camelot: analysis.key.camelot });
@@ -490,6 +512,7 @@ export const useStore = create<Store>((set, get) => {
       duration: buffer.duration,
       sampleRate: buffer.sampleRate,
       analysis: song.analysis,
+      vocal: song.vocal ?? null,
       semitones: song.semitones,
       status: "ready",
       progress: 1,
@@ -532,6 +555,8 @@ export const useStore = create<Store>((set, get) => {
         if (get().decks[deckId].songId !== song.id) return; // deck changed meanwhile
         engine.invalidateDeck(deckId);
         setDeck(deckId, { buffers: buildAiBuffers(buffer, decoded), stemSource: "ai", stemBusy: false, stemProgress: "" });
+        if (!song.vocal || !song.analysis.barChroma) void computeVocalProfile(deckId);
+        refreshSuggestions();
       } catch {
         setDeck(deckId, { stemBusy: false, stemProgress: "" });
       }
@@ -664,6 +689,116 @@ export const useStore = create<Store>((set, get) => {
     }
   };
 
+  const plannerSongs = (): [PlannerSong, PlannerSong] | null => {
+    const s = get();
+    const list: PlannerSong[] = [];
+    for (const id of ["A", "B"] as DeckId[]) {
+      const d = s.decks[id];
+      if (d.status !== "ready" || !d.analysis) continue;
+      list.push({ deck: id, name: d.name, analysis: d.analysis, vocal: d.vocal, stems: Object.keys(d.buffers) as StemKey[] });
+    }
+    return list.length === 2 ? [list[0], list[1]] : null;
+  };
+
+  /** Derive phrases / vocal energy / melody chroma from the isolated vocal stem and persist it. */
+  const computeVocalProfile = async (deckId: DeckId) => {
+    const d = get().decks[deckId];
+    const a = d.analysis;
+    const voc = d.buffers.vocals;
+    if (!a || !voc || d.stemSource !== "ai") return;
+    try {
+      const profile = await runVocalProfile(toMono(voc), voc.sampleRate, { firstDownbeat: a.firstDownbeat, beatInterval: a.beatInterval, totalBars: a.totalBars });
+      if (get().decks[deckId].songId !== d.songId) return;
+      setDeck(deckId, { vocal: profile });
+      if (d.songId) void persistSong(d.songId, { vocal: profile });
+      refreshSuggestions();
+    } catch (err) {
+      console.warn("Vocal profile failed", err);
+    }
+  };
+
+  const candidateToPlan = (c: PlanCandidate, labels?: string[]): ClaudePlan => ({
+    summary: c.description,
+    foundation: { deck: c.foundation.deck, startBar: c.foundation.startBar, stem: c.foundation.stem, reason: "" },
+    masterBpm: c.masterBpm,
+    pitchShift: c.semitones ? { deck: c.vocalDeck, semitones: c.semitones, reason: "" } : null,
+    arrangement: c.clips.map((k, i) => ({ deck: k.deck, srcBar: k.srcBar, lengthBars: k.lengthBeats / 4, startBar: k.startBeat / 4, lane: k.lane, label: labels?.[i] ?? k.label, stem: k.stem, mode: k.mode })),
+    tips: [],
+  });
+
+  const songSummaries = () => {
+    const s = get();
+    return (["A", "B"] as DeckId[])
+      .map((id) => {
+        const d = s.decks[id];
+        const a = d.analysis;
+        if (!a) return null;
+        const desc = describeSong(a);
+        const loudest = d.vocal ? d.vocal.barVocal.map((v, i) => [v, i] as [number, number]).sort((x, y) => y[0] - x[0]).slice(0, 6).map((x) => x[1]).sort((x, y) => x - y) : [];
+        return {
+          deck: id,
+          name: d.name,
+          bpm: Math.round(a.bpm * 10) / 10,
+          key: a.key.name,
+          camelot: a.key.camelot,
+          durationSec: Math.round(a.duration),
+          totalBars: a.totalBars,
+          stems: Object.keys(d.buffers),
+          sections: desc.sections,
+          vocal: d.vocal ? { phrases: d.vocal.phrases.length, firstPhraseBar: d.vocal.phrases.length ? Math.floor(d.vocal.phrases[0].startBeat / 4) : null, loudestBars: loudest } : null,
+        };
+      })
+      .filter(Boolean);
+  };
+
+  const candidatesForClaude = (cands: PlanCandidate[]) =>
+    cands.slice(0, 6).map((c) => ({
+      id: c.id,
+      template: c.template,
+      description: c.description,
+      score: Math.round(c.score * 100) / 100,
+      breakdown: { harmony: r2(c.breakdown.harmony), phrases: r2(c.breakdown.phrases), energy: r2(c.breakdown.energy), stretch: r2(c.breakdown.stretch) },
+      foundation: c.foundation,
+      vocalDeck: c.vocalDeck,
+      semitones: c.semitones,
+      masterBpm: c.masterBpm,
+      lengthBars: c.lengthBars,
+      clips: c.clips.map((k) => ({ label: k.label, deck: k.deck, srcBar: Math.round(k.srcBar * 4) / 4, lengthBars: Math.round(k.lengthBeats) / 4, startBar: Math.round(k.startBeat) / 4, stem: k.stem, mode: k.mode, fit: r2(k.fit) })),
+    }));
+  const r2 = (v: number) => Math.round(v * 100) / 100;
+
+  const consultClaude = async (instruction?: string) => {
+    const s = get();
+    let cands = s.candidates.length ? s.candidates : get().planMashup(s.planConstraints);
+    if (cands.length === 0) throw new Error("Nothing to plan yet: load two songs first");
+    const history = s.planHistory.map((h) => ({ instruction: h.instruction, summary: h.plan.summary }));
+    const call = async (list: PlanCandidate[], instr?: string) => {
+      const r = await fetch("/api/advise", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ songs: songSummaries(), candidates: candidatesForClaude(list), instruction: instr, history }) });
+      const j = await r.json();
+      if (!r.ok) throw new Error(j.error ?? "Advisor failed");
+      return j.result as { choice: string | null; constraints: Partial<Record<keyof PlanConstraints, unknown>> | null; summary: string; tips: string[]; clipLabels: string[]; stemAdvice: ClaudeNotes["stemAdvice"] };
+    };
+    let res = await call(cands, instruction);
+    if (res.constraints) {
+      const next: PlanConstraints = { ...s.planConstraints };
+      for (const [k, v] of Object.entries(res.constraints)) if (v !== null && v !== undefined) (next as Record<string, unknown>)[k] = v;
+      cands = get().planMashup(next);
+      if (cands.length && (!res.choice || !cands.some((c) => c.id === res.choice))) {
+        // let Claude pick among the re-searched candidates and describe them
+        res = await call(cands, instruction ? `${instruction} (the candidates now reflect your constraints; choose one)` : undefined);
+      }
+    }
+    const chosen = cands.find((c) => c.id === res.choice) ?? cands[0];
+    if (!chosen) throw new Error("The planner found no workable arrangement");
+    const notes: ClaudeNotes = { summary: res.summary, tips: res.tips, clipLabels: res.clipLabels ?? [], stemAdvice: res.stemAdvice ?? [], choice: chosen.id };
+    const plan = candidateToPlan(chosen, notes.clipLabels.length === chosen.clips.length ? notes.clipLabels : undefined);
+    plan.summary = res.summary;
+    plan.tips = res.tips;
+    plan.stemAdvice = res.stemAdvice;
+    set({ candidates: cands, selectedCandidateId: chosen.id, claudeNotes: notes, claudePlan: { ...plan, notes: sanitizePlan(plan, get().decks)?.notes ?? [] } });
+    return plan;
+  };
+
   const storeImpl = {
     decks: { A: emptyDeck("A"), B: emptyDeck("B") },
     project: { masterBpm: 120, foundation: null, clips: [], lengthBars: 16, loop: true, automation: emptyAutomation(), cues: [], loopRegion: null },
@@ -678,6 +813,11 @@ export const useStore = create<Store>((set, get) => {
     config: { loaded: false, ai: false, cloud: false, stems: false, needCode: false },
     suggestions: [],
     claudePlan: null,
+    candidates: [],
+    selectedCandidateId: null,
+    planConstraints: {},
+    claudeNotes: null,
+    auditioning: false,
     planHistory: [],
     claudeBusy: false,
     claudeError: null,
@@ -1452,6 +1592,7 @@ export const useStore = create<Store>((set, get) => {
         await persistSong(song.id, { stemSource: "ai", aiStems: stored, stemUrls, cloud: true }, true);
         engine.invalidateDeck(deckId);
         setDeck(deckId, { buffers, stemSource: "ai", stemBusy: false, stemProgress: "" });
+        void computeVocalProfile(deckId);
         get().showToast(`AI stems ready for ${d.name}`);
         void restartIfPlaying();
       } catch (err) {
@@ -1608,36 +1749,89 @@ export const useStore = create<Store>((set, get) => {
       }
     },
 
-    askClaude: async () => {
+    planMashup: (constraints) => {
+      const songs = plannerSongs();
+      if (!songs) return [];
+      const c = constraints ?? get().planConstraints;
+      const cands = planMashup(songs, c);
+      const prev = get().selectedCandidateId;
+      const selected = cands.some((x) => x.id === prev) ? prev : (cands[0]?.id ?? null);
+      set({ candidates: cands, selectedCandidateId: selected, planConstraints: c, claudePlan: cands.length ? { ...candidateToPlan(cands.find((x) => x.id === selected) ?? cands[0]), notes: [] } : null });
+      return cands;
+    },
+
+    selectCandidate: (id) => {
+      const c = get().candidates.find((x) => x.id === id);
+      if (!c) return;
+      const notes = get().claudeNotes;
+      set({ selectedCandidateId: id, claudePlan: { ...candidateToPlan(c, notes?.choice === id ? notes.clipLabels : undefined), summary: notes?.choice === id ? notes.summary : c.description, tips: notes?.choice === id ? notes.tips : [], notes: [] } });
+    },
+
+    auditionCandidate: async (id) => {
       const s = get();
-      const payload = (["A", "B"] as DeckId[]).map((id) => {
-        const d = s.decks[id];
-        const a = d.analysis;
-        if (!a) return null;
-        return {
-          deck: id,
-          name: d.name,
-          bpm: Math.round(a.bpm * 10) / 10,
-          key: a.key.name,
-          camelot: a.key.camelot,
-          durationSec: Math.round(a.duration),
-          totalBars: a.totalBars,
-          stems: Object.keys(d.buffers),
-          ...describeSong(a),
-        };
-      });
-      set({ claudeBusy: true, claudeError: null, planHistory: [] });
+      const c = s.candidates.find((x) => x.id === id);
+      if (!c) return;
+      const decks = engineDecks(s.decks);
+      // First hook: the foundation under the first layered vocal clip (or the first swap section)
+      const first = c.clips.find((k) => k.mode === "layer") ?? c.clips[0];
+      if (!first) return;
+      const startBeat = Math.max(0, Math.floor(first.startBeat / 4) * 4);
+      const bars = Math.max(4, Math.min(8, Math.ceil(first.lengthBeats / 4)));
+      const project: Project = {
+        masterBpm: c.masterBpm,
+        foundation: { deckId: c.foundation.deck, stem: c.foundation.stem, startBar: c.foundation.startBar + startBeat / 4, gain: 1 },
+        clips: [{ id: "audition", deckId: first.deck, stem: first.stem, srcBar: first.srcBar, lengthBeats: first.lengthBeats, startBeat: first.startBeat - startBeat, lane: 1, gain: 1, mode: first.mode }],
+        lengthBars: bars,
+        loop: true,
+        automation: emptyAutomation(),
+        cues: [],
+        loopRegion: null,
+      };
+      // temporary pitch shift on the vocal deck for the audition
+      const vd = decks[c.vocalDeck];
+      const prevSemis = vd?.semitones ?? 0;
+      if (vd && vd.semitones !== c.semitones) {
+        vd.semitones = c.semitones;
+        engine.invalidateDeck(c.vocalDeck);
+      }
+      set({ busy: { label: "Preparing audition", value: 0 }, auditioning: true, previewDeck: null });
       try {
-        const r = await fetch("/api/advise", {
-          method: "POST",
-          headers: { "content-type": "application/json" },
-          body: JSON.stringify({ songs: payload.filter(Boolean) }),
-        });
-        const j = await r.json();
-        if (!r.ok) throw new Error(j.error ?? "Advisor failed");
-        const plan = j.plan as ClaudePlan;
-        const checked = sanitizePlan(plan, get().decks);
-        set({ claudePlan: { ...plan, notes: checked?.notes ?? [] }, claudeBusy: false });
+        engine.onEnded = () => set({ playing: false, auditioning: false });
+        await engine.play(project, decks, 0, { metronome: false, countIn: false }, (label, value) => set({ busy: { label, value } }));
+        set({ playing: true, busy: null });
+      } catch (err) {
+        set({ busy: null, playing: false, auditioning: false });
+        get().showToast(`Audition failed: ${(err as Error).message}`);
+      } finally {
+        if (vd && vd.semitones !== prevSemis) {
+          // restore the deck's real pitch for the next normal playback
+          vd.semitones = prevSemis;
+          engine.invalidateDeck(c.vocalDeck);
+        }
+      }
+    },
+
+    stopAudition: () => {
+      engine.stop();
+      set({ playing: false, auditioning: false });
+    },
+
+    applyCandidate: (id) => {
+      const c = get().candidates.find((x) => x.id === id);
+      if (!c) return;
+      const notes = get().claudeNotes;
+      const plan = candidateToPlan(c, notes?.choice === id ? notes.clipLabels : undefined);
+      set({ claudePlan: { ...plan, notes: [] } });
+      get().applyClaudePlan();
+    },
+
+    askClaude: async () => {
+      if (!plannerSongs()) return;
+      set({ claudeBusy: true, claudeError: null, planHistory: [], claudeNotes: null });
+      try {
+        get().planMashup(get().planConstraints);
+        await consultClaude();
+        set({ claudeBusy: false });
       } catch (err) {
         set({ claudeBusy: false, claudeError: (err as Error).message });
       }
@@ -1647,28 +1841,10 @@ export const useStore = create<Store>((set, get) => {
       const s = get();
       const prev = s.claudePlan;
       if (!prev || !instruction.trim()) return;
-      const payload = (["A", "B"] as DeckId[]).map((id) => {
-        const d = s.decks[id];
-        const a = d.analysis;
-        if (!a) return null;
-        return { deck: id, name: d.name, bpm: Math.round(a.bpm * 10) / 10, key: a.key.name, camelot: a.key.camelot, durationSec: Math.round(a.duration), totalBars: a.totalBars, stems: Object.keys(d.buffers), ...describeSong(a) };
-      });
-      const history = [...s.planHistory, { instruction: instruction.trim(), plan: prev }];
       set({ claudeBusy: true, claudeError: null });
       try {
-        const r = await fetch("/api/advise", {
-          method: "POST",
-          headers: { "content-type": "application/json" },
-          body: JSON.stringify({
-            songs: payload.filter(Boolean),
-            history: history.map((h) => ({ instruction: h.instruction, plan: { ...h.plan, notes: undefined } })),
-          }),
-        });
-        const j = await r.json();
-        if (!r.ok) throw new Error(j.error ?? "Advisor failed");
-        const plan = j.plan as ClaudePlan;
-        const checked = sanitizePlan(plan, get().decks);
-        set({ claudePlan: { ...plan, notes: checked?.notes ?? [] }, planHistory: history, claudeBusy: false });
+        const plan = await consultClaude(instruction.trim());
+        set({ planHistory: [...get().planHistory, { instruction: instruction.trim(), plan }], claudeBusy: false });
       } catch (err) {
         set({ claudeBusy: false, claudeError: (err as Error).message });
       }

@@ -17,7 +17,7 @@ Built with Next.js (App Router), TypeScript, Tailwind v4 and Zustand. Designed t
 - **Stems**
   - *Quick stems* – instant vocal / instrumental split using centre-channel cancellation. Local, free, rough but useful.
   - *AI stems* – Demucs via Replicate: vocals, drums, bass + music, instrumental. Cloud, about 1–3 minutes, needs keys (below). Pick the standard, fine-tuned (cleaner vocals) or 6-stem variant per run.
-- **Mash advisor** – local heuristics suggest which song should carry the beat, a tempo compromise, a key shift, and the best hook / breakdown bars. With an Anthropic key you can also ask Claude for a full arrangement plan, refine it in follow-ups ("make the drop hit harder"), and apply it in one click. Claude sees the detected sections and recommends which songs need Demucs and which variant. Every plan passes through musical guard-rails (`src/lib/planRules.ts`): one beat at a time, never two lead vocals at once, instrumental foundation under a layered vocal, phrase-aligned positions.
+- **Mash advisor** – a computational planner does the musical work: it searches every foundation start bar, vocal segment, pitch shift (±3 st) and arrangement template, and scores each candidate on bar-by-bar **chord fit** (chroma agreement between the vocal's notes and the foundation's harmony, with semitone-clash penalties), **phrase completeness** (clips start on sung phrases, pickups included, and never cut through one), **energy shape** (choruses in hook slots, quieter passages in breakdowns) and **tempo stretch**. Run AI stems on the vocal song first: the planner then reads phrases, per-bar vocal energy and melody chroma from the isolated vocal. Plans come with meters, an **Audition hook** button that loops the first hook over the foundation before you commit, alternatives, and quick adjustments (vocal earlier, more energy, longer, swap roles, no pitch shift). With an Anthropic key, **Plan with Claude** hands the scored candidates to Claude, which chooses, labels the parts, explains the plan, recommends Demucs variants, and turns follow-up instructions ("make the drop hit harder") into new search constraints. Every applied plan still passes the guard-rails in `src/lib/planRules.ts`.
 - **Grid fixes** – halve / double tempo, nudge the downbeat by a beat, shift the grid by 10 ms.
 - **Export** – WAV or MP3, whole arrangement or just the loop region, optional loudness normalisation to −14 LUFS. Ticking *Save to library* keeps the render as a playable mix; with the cloud library it also gets a public share page at `/m/<id>`.
 
@@ -65,7 +65,7 @@ npx tsx scripts/dsp-check.ts   # synthetic click tracks: verifies BPM, downbeat,
 ## Project layout
 
 ```
-src/lib/audio/      pure DSP: FFT, analysis (tempo / beats / key), sections, WSOLA stretch + pitch (+ formants), quick stems, align, loudness, WAV/MP3
+src/lib/audio/      pure DSP: FFT, analysis (tempo / beats / key / chroma), sections, vocal profile (phrases), WSOLA stretch + pitch (+ formants), quick stems, align, loudness, WAV/MP3
 src/workers/        Web Workers that run the DSP off the main thread
 src/lib/engine/     Web Audio scheduling, tempo-matched buffer cache, offline render
 src/lib/store.ts    application state and all user actions

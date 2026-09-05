@@ -1,6 +1,7 @@
 import { FFT, hannWindow } from "./fft";
 import { camelotOf, keyName, type KeyInfo, type Mode } from "./music";
 import { detectSections, type Section } from "./sections";
+import { chromaPerBar } from "./vocal";
 
 export interface SongAnalysis {
   duration: number; // seconds
@@ -22,6 +23,8 @@ export interface SongAnalysis {
   totalBars: number;
   /** Structural sections (intro / verse / chorus ...), on the same bar grid */
   sections?: Section[];
+  /** 12 x totalBars pitch-class distribution of the full mix per bar (harmony), each bar summing to 1 */
+  barChroma?: Float32Array;
 }
 
 export const PEAK_BUCKETS = 2400;
@@ -377,6 +380,7 @@ export function analyzeSong(
   normalise(barVocal);
   onProgress?.({ stage: "sections", value: 0.93 });
   const sections = detectSections(mono, sr, { firstDownbeat, beatInterval, totalBars });
+  const barChroma = Float32Array.from(chromaPerBar(mono, sr, { firstDownbeat, beatInterval, totalBars }));
   onProgress?.({ stage: "done", value: 1 });
 
   return {
@@ -393,13 +397,14 @@ export function analyzeSong(
     barVocal,
     totalBars,
     sections,
+    barChroma,
   };
 }
 
 /** Re-run only the structural segmentation for an existing grid (after the user corrects tempo / downbeat). */
-export function sectionsForGrid(monoIn: Float32Array, sampleRateIn: number, grid: { firstDownbeat: number; beatInterval: number; totalBars: number }): Section[] {
+export function sectionsForGrid(monoIn: Float32Array, sampleRateIn: number, grid: { firstDownbeat: number; beatInterval: number; totalBars: number }): { sections: Section[]; barChroma: Float32Array } {
   const { data: mono, sr } = downsample(monoIn, sampleRateIn);
-  return detectSections(mono, sr, grid);
+  return { sections: detectSections(mono, sr, grid), barChroma: Float32Array.from(chromaPerBar(mono, sr, grid)) };
 }
 
 function detectKey(chroma: Float32Array): KeyInfo {

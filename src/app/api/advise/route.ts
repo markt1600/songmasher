@@ -6,9 +6,12 @@ export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 export const maxDuration = 60;
 
-const Window = z.object({ bar: z.number(), score: z.number() });
+const Deck = z.enum(["A", "B"]);
+const StemEnum = z.enum(["full", "vocals", "instrumental", "drums", "melodic"]);
+const TemplateEnum = z.enum(["classic", "vocal-first", "call-response", "extended"]);
+
 const SongSchema = z.object({
-  deck: z.enum(["A", "B"]),
+  deck: Deck,
   name: z.string().max(200),
   bpm: z.number(),
   key: z.string(),
@@ -16,145 +19,125 @@ const SongSchema = z.object({
   durationSec: z.number(),
   totalBars: z.number(),
   stems: z.array(z.string()),
-  phrases: z.array(z.object({ bar: z.number(), energy: z.number(), beat: z.number(), vocal: z.number() })).max(400),
   sections: z.array(z.object({ label: z.string(), startBar: z.number(), endBar: z.number() })).max(80).optional(),
-  hooks: z.array(Window).max(5),
-  quietVocals: z.array(Window).max(5),
-  instrumentalGrooves: z.array(Window).max(5),
-});
-
-const StemEnum = z.enum(["full", "vocals", "instrumental", "drums", "melodic"]);
-
-const PlanSchema = z.object({
-  summary: z.string(),
-  foundation: z.object({
-    deck: z.enum(["A", "B"]),
-    startBar: z.number().int().min(0),
-    stem: StemEnum,
-    reason: z.string(),
-  }),
-  masterBpm: z.number(),
-  pitchShift: z
+  vocal: z
     .object({
-      deck: z.enum(["A", "B"]),
-      semitones: z.number().int().min(-12).max(12),
-      reason: z.string(),
+      phrases: z.number(),
+      firstPhraseBar: z.number().nullable(),
+      loudestBars: z.array(z.number()).max(8),
     })
-    .nullable(),
-  arrangement: z.array(
-    z.object({
-      deck: z.enum(["A", "B"]),
-      srcBar: z.number().int().min(0),
-      lengthBars: z.number().int().min(1).max(64),
-      startBar: z.number().int().min(0),
-      lane: z.number().int().min(1).max(3),
-      label: z.string(),
-      stem: StemEnum,
-      mode: z.enum(["layer", "swap"]),
-    }),
-  ),
-  tips: z.array(z.string()).max(6),
-  stemAdvice: z.array(
-    z.object({
-      deck: z.enum(["A", "B"]),
-      variant: z.enum(["htdemucs", "htdemucs_ft", "htdemucs_6s"]),
-      reason: z.string(),
-    }),
-  ),
+    .nullable()
+    .optional(),
 });
 
-const HistorySchema = z.array(z.object({ instruction: z.string().max(2000), plan: z.unknown() })).max(8);
+const CandidateSchema = z.object({
+  id: z.string(),
+  template: TemplateEnum,
+  description: z.string(),
+  score: z.number(),
+  breakdown: z.object({ harmony: z.number(), phrases: z.number(), energy: z.number(), stretch: z.number() }),
+  foundation: z.object({ deck: Deck, startBar: z.number(), stem: StemEnum }),
+  vocalDeck: Deck,
+  semitones: z.number(),
+  masterBpm: z.number(),
+  lengthBars: z.number(),
+  clips: z.array(z.object({ label: z.string(), deck: Deck, srcBar: z.number(), lengthBars: z.number(), startBar: z.number(), stem: StemEnum, mode: z.enum(["layer", "swap"]), fit: z.number() })).max(12),
+});
 
-const SYSTEM = `You are the arrangement brain inside SongMasher, a two-song mashup tool. You get an automatic
-analysis of two songs and must return one concrete arrangement that a producer would actually build.
+const ConstraintsSchema = z.object({
+  foundation: Deck.nullable(),
+  lengthBars: z.number().int().min(8).max(128).nullable(),
+  vocalEntryBar: z.number().int().min(0).max(32).nullable(),
+  hookBars: z.union([z.literal(4), z.literal(8), z.literal(16)]).nullable(),
+  energy: z.enum(["higher", "lower"]).nullable(),
+  maxShift: z.number().int().min(0).max(6).nullable(),
+  template: TemplateEnum.nullable(),
+});
 
-## How the tool plays things
-- The FOUNDATION is one song playing continuously from a chosen source bar, tempo-matched to the master BPM.
-  It carries the groove for the whole mashup. It can use a stem: "full" (whole mix) or, when that song lists
-  it under "stems", "instrumental" (no vocals), "drums", or "melodic" (bass + music, no drums).
-- CLIPS are bar ranges of either song placed on a bar timeline (three lanes). Each clip has a stem and a mode:
-  - mode "layer": plays ON TOP of the foundation. Only for stems with no drums: "vocals" or "melodic".
-  - mode "swap": the foundation is MUTED while the clip plays; the clip's own mix takes over. Use this for
-    "full", "instrumental" or "drums" clips, i.e. whenever the clip brings its own beat.
-- Bar numbers are 0-based in both the source songs and the timeline. Timeline positions must be multiples of 4.
+const ResponseSchema = z.object({
+  /** id of the chosen candidate, or null when the constraints should be applied and the best result taken */
+  choice: z.string().nullable(),
+  /** search constraints derived from the user's instruction (null when no change is wanted) */
+  constraints: ConstraintsSchema.nullable(),
+  summary: z.string(),
+  tips: z.array(z.string()).max(5),
+  clipLabels: z.array(z.string()).max(12),
+  stemAdvice: z.array(z.object({ deck: Deck, variant: z.enum(["htdemucs", "htdemucs_ft", "htdemucs_6s"]), reason: z.string() })),
+});
 
-## The analysis you receive (per song)
-- bpm, key with Camelot code, totalBars, and which stems exist.
-- phrases: one row per 4-bar phrase with energy (loudness), beat (percussive strength) and vocal (lead
-  vocal / melody presence), all 0..1.
-- sections: the detected song structure (Intro / Verse / Chorus / Bridge / Break / Outro) as 0-based bar ranges
-  (endBar exclusive). Choruses are the natural hooks; verses and breaks make good breakdowns; intros make
-  poor foundations. Use these ranges directly when they exist.
-- hooks: best 8-bar windows for a vocal hook (loud + vocal). quietVocals: sparse vocal passages.
-  instrumentalGrooves: 8-bar windows with a strong beat and little vocal. Prefer these precomputed windows;
-  they are aligned to phrase boundaries.
+const HistorySchema = z.array(z.object({ instruction: z.string().max(2000), summary: z.string().max(4000) })).max(8);
 
-## Hard rules (the app enforces them, so a plan that breaks them gets edited)
-1. Exactly one beat at a time. Never layer a clip that contains drums over the foundation.
-2. Never two lead vocals at once. Layered vocal clips must not overlap each other, and while one plays the
-   foundation must be "instrumental" (if that song has stems) or sit in one of its instrumentalGrooves.
-3. Source ranges stay inside totalBars. Lengths are 4, 8 or 16 bars. Timeline starts are multiples of 4.
+const SYSTEM = `You are the producer's ear inside SongMasher, a two-song mashup tool. A deterministic planner has already
+listened to both songs numerically: it knows the tempo, key, beat grid, song sections, where the singer actually
+sings (phrases, from the isolated vocal stem when available), and it has scored candidate arrangements by
+bar-by-bar harmonic fit between the vocal's notes and the foundation's chords, phrase completeness (no clip cuts
+into the middle of a sung phrase), energy shape and tempo stretch. Your job is to choose and to interpret, never
+to invent bar numbers.
 
-## What good looks like
-- Foundation: the song with the steadier, stronger beat. Start it at an instrumentalGroove, never in an intro
-  that is quiet. If both songs have stems, prefer foundation stem "instrumental" and the other song's "vocals".
-- Structure, typically 24-40 bars:
-  a. 4-8 bars of foundation alone to establish the groove.
-  b. The other song's hook as a layered "vocals" clip, 8 bars, then repeated once (two clips back to back).
-  c. A contrast section: either a "swap" clip of the other song's full mix (8 bars, its own beat takes over),
-     or a quietVocals passage layered over the foundation.
-  d. Return of the hook, then 4-8 bars of foundation alone to end.
-- Without stems: you cannot layer safely, so build a call-and-response using "swap" clips (8-bar sections
-  alternating between the two songs), and say in tips that running AI stems would unlock true layering.
-- Tempo: keep the foundation's BPM if the other song is within ~8%; otherwise pick a value between them.
-  If the tempos are near a 2:1 ratio, treat them as the same feel and keep the foundation's BPM.
-- Pitch: shift the non-foundation song only when the keys clash, by the smallest amount (prefer within +-3).
-- Labels are short ("Hook", "Hook again", "Breakdown", "Drop", "Outro"). Summary: 2-3 plain sentences.
-  Tips: 2-4 practical, specific pointers (e.g. "lower the foundation level to 0.8 under the hook").
-- stemAdvice: for each song that still lacks a "vocals" stem (see its stems list) and whose vocal you use, or whose
-  current stems are only the rough "quick" kind, recommend a Demucs variant: "htdemucs" for most songs,
-  "htdemucs_ft" when the vocal is the star of the mashup and needs to be clean, "htdemucs_6s" when guitar or piano
-  should be separable. Empty array when nothing is needed.
+You receive:
+- songs: analysis summaries (sections are 0-based bar ranges, endBar exclusive; vocal.firstPhraseBar is where singing starts).
+- candidates: the planner's top arrangements, best first, with a score (0..1) and a breakdown. Each candidate lists
+  its clips (label, source bars, timeline bar, stem, layer/swap mode, harmonic fit). Templates:
+  classic = beat alone, hook x2, breakdown, hook; vocal-first = vocal from bar 0; call-response = the two songs
+  alternate in swap mode; extended = longer build.
+- optionally an instruction from the user and the history of earlier instructions.
 
-## Follow-up requests
-When the conversation contains earlier plans and a new instruction ("make the drop hit harder", "use more of song B",
-"shorter"), revise the most recent plan to satisfy the instruction while keeping everything that still works.
-Return a complete plan every time, not a diff, and mention in the summary what changed.`;
+Respond with:
+- choice: the id of the candidate you would build, judged musically (a slightly lower score with a better structure
+  or a smaller pitch shift can be the right call; harmonic fit below ~0.5 is a real clash, avoid it). Null only when
+  you set constraints that require a new search.
+- constraints: when the user's instruction asks for something the candidates don't offer, express it as search
+  constraints (e.g. "bring the vocal in earlier" -> vocalEntryBar 4 or template vocal-first; "make it longer" ->
+  lengthBars; "less pitch shifting" -> maxShift 1; "more energy" -> energy higher, template classic with hookBars 8;
+  "swap the roles" -> foundation set to the other deck). Otherwise null. Unchanged fields null.
+- summary: 2-3 sentences a producer would say about the chosen plan: what sits under what, where the hook lands,
+  why it works, and any caveat (e.g. one breakdown clip fits less well).
+- tips: 2-4 concrete follow-ups in the tool (levels, a filter sweep before the hook, an extra repeat, running
+  fine-tuned stems), specific to these songs.
+- clipLabels: a short evocative label per clip of the chosen candidate, in order (same count as its clips), else [].
+- stemAdvice: songs that still lack a "vocals" stem but are used for their vocal, with the Demucs variant to run
+  ("htdemucs" default, "htdemucs_ft" when the vocal is the star, "htdemucs_6s" for guitar/piano). Empty otherwise.`;
 
 export async function POST(request: Request): Promise<Response> {
   if (!process.env.ANTHROPIC_API_KEY) return Response.json({ error: "ANTHROPIC_API_KEY is not set on the server" }, { status: 501 });
   let songs: z.infer<typeof SongSchema>[];
+  let candidates: z.infer<typeof CandidateSchema>[];
+  let instruction: string | undefined;
   let history: z.infer<typeof HistorySchema> = [];
   try {
     const body = await request.json();
     songs = z.array(SongSchema).min(2).max(2).parse(body.songs);
+    candidates = z.array(CandidateSchema).min(1).max(8).parse(body.candidates);
+    instruction = typeof body.instruction === "string" ? body.instruction.slice(0, 2000) : undefined;
     if (body.history) history = HistorySchema.parse(body.history);
   } catch {
-    return Response.json({ error: "Two analysed songs are required" }, { status: 400 });
+    return Response.json({ error: "Two analysed songs and at least one candidate are required" }, { status: 400 });
   }
   const client = new Anthropic();
   const messages: Anthropic.MessageParam[] = [
     {
       role: "user",
-      content: `Design the mashup for these two songs. Follow the hard rules exactly and use the precomputed windows.\n\n${JSON.stringify(songs)}`,
+      content: `Songs:\n${JSON.stringify(songs)}\n\nCandidates (best first):\n${JSON.stringify(candidates)}`,
     },
   ];
   for (const h of history) {
-    messages.push({ role: "assistant", content: JSON.stringify(h.plan) });
-    messages.push({ role: "user", content: `Revise the plan: ${h.instruction}` });
+    messages.push({ role: "user", content: `Instruction: ${h.instruction}` });
+    messages.push({ role: "assistant", content: h.summary });
   }
+  if (instruction) messages.push({ role: "user", content: `Instruction: ${instruction}\n\nThe candidates above were searched with the previous constraints. If they already satisfy this, choose one; otherwise return new constraints.` });
+  else messages.push({ role: "user", content: "Choose the candidate to build and explain it." });
   try {
     const response = await client.messages.parse({
       model: "claude-opus-5",
-      max_tokens: 8000,
+      max_tokens: 6000,
       system: SYSTEM,
-      output_config: { format: zodOutputFormat(PlanSchema), effort: "high" },
+      output_config: { format: zodOutputFormat(ResponseSchema), effort: "high" },
       messages,
     });
     if (response.stop_reason === "refusal") return Response.json({ error: "The advisor declined this request" }, { status: 422 });
-    const plan = response.parsed_output;
-    if (!plan) return Response.json({ error: "The advisor returned an unreadable plan" }, { status: 502 });
-    return Response.json({ plan });
+    const out = response.parsed_output;
+    if (!out) return Response.json({ error: "The advisor returned an unreadable answer" }, { status: 502 });
+    return Response.json({ result: out });
   } catch (err) {
     if (err instanceof Anthropic.AuthenticationError) return Response.json({ error: "Invalid ANTHROPIC_API_KEY" }, { status: 500 });
     if (err instanceof Anthropic.RateLimitError) return Response.json({ error: "Rate limited by the Claude API, try again shortly" }, { status: 429 });
