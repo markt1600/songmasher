@@ -25,8 +25,16 @@ export interface LibrarySong {
   analysis: SongAnalysis;
   semitones: number;
   stemSource: StemSource;
-  /** which AI stems are stored under files `${id}:${stem}` */
+  /** which AI stems exist (stored locally under files `${id}:${stem}` and/or in the cloud) */
   aiStems: AiStemKey[];
+  /** last metadata change; newest wins when merging local and cloud copies */
+  updatedAt?: number;
+  /** cloud copy of the original file */
+  fileUrl?: string;
+  /** cloud copies of the AI stems */
+  stemUrls?: Partial<Record<AiStemKey, string>>;
+  /** true when this record came from (or is synced to) the cloud library */
+  cloud?: boolean;
 }
 
 interface StoredFile {
@@ -96,10 +104,21 @@ export async function putSong(song: LibrarySong): Promise<void> {
   await tx("songs", "readwrite", (s) => s.put(song));
 }
 
-export async function updateSong(id: string, patch: Partial<LibrarySong>): Promise<void> {
+export async function updateSong(id: string, patch: Partial<LibrarySong>): Promise<LibrarySong | undefined> {
   const existing = await getSong(id);
-  if (!existing) return;
-  await putSong({ ...existing, ...patch });
+  if (!existing) return undefined;
+  const next = { ...existing, ...patch, updatedAt: patch.updatedAt ?? Date.now() };
+  await putSong(next);
+  return next;
+}
+
+export async function hasFile(id: string): Promise<boolean> {
+  try {
+    const key = await tx<IDBValidKey | undefined>("files", "readonly", (s) => s.getKey(id));
+    return key !== undefined;
+  } catch {
+    return false;
+  }
 }
 
 export async function putFile(id: string, blob: Blob): Promise<void> {

@@ -1,5 +1,5 @@
 import Replicate from "replicate";
-import { stemsAuthorized } from "@/lib/server/access";
+import { authorized, unauthorized } from "@/lib/server/access";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -33,7 +33,7 @@ async function resolveVersion(replicate: Replicate): Promise<string> {
 
 /** Start a Demucs separation for an already-uploaded audio URL. */
 export async function POST(request: Request): Promise<Response> {
-  if (!stemsAuthorized(request.headers.get("x-stems-code"))) return Response.json({ error: "Invalid access code" }, { status: 401 });
+  if (!authorized(request.headers.get("x-access-code"))) return unauthorized();
   const replicate = client();
   if (!replicate) return Response.json({ error: "REPLICATE_API_TOKEN is not set" }, { status: 501 });
   let audioUrl: string;
@@ -63,7 +63,7 @@ export async function POST(request: Request): Promise<Response> {
 
 /** Poll a separation job. */
 export async function GET(request: Request): Promise<Response> {
-  if (!stemsAuthorized(request.headers.get("x-stems-code"))) return Response.json({ error: "Invalid access code" }, { status: 401 });
+  if (!authorized(request.headers.get("x-access-code"))) return unauthorized();
   const replicate = client();
   if (!replicate) return Response.json({ error: "REPLICATE_API_TOKEN is not set" }, { status: 501 });
   const id = new URL(request.url).searchParams.get("id");

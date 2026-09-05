@@ -30,8 +30,6 @@ export default function Deck({ id }: { id: DeckId }) {
     setDeckBpm,
     separateQuick,
     separateAI,
-    stemsCode,
-    setStemsCode,
   } = useStore();
   const [drag, setDrag] = useState(false);
   const [showGrid, setShowGrid] = useState(false);
@@ -197,14 +195,7 @@ export default function Deck({ id }: { id: DeckId }) {
                     <button
                       className="btn btn-sm"
                       disabled={!config.stems}
-                      onClick={() => {
-                        if (config.stemsNeedCode && !stemsCode) {
-                          const c = window.prompt("Enter the access code for AI stem separation");
-                          if (!c) return;
-                          setStemsCode(c);
-                        }
-                        void separateAI(id);
-                      }}
+                      onClick={() => void separateAI(id)}
                       title={config.stems ? "Separate vocals, drums, bass and music with Demucs in the cloud (about 1–3 minutes)" : "Set REPLICATE_API_TOKEN and BLOB_READ_WRITE_TOKEN on the server to enable AI stems"}
                     >
                       <Icon name="sparkles" size={11} /> AI

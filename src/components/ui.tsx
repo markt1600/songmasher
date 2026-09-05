@@ -42,6 +42,10 @@ export function Icon({ name, size = 16 }: { name: string; size?: number }) {
       return <svg {...common}><path d="M9 18V5l12-2v13" /><circle cx="6" cy="18" r="3" /><circle cx="18" cy="16" r="3" /></svg>;
     case "wand":
       return <svg {...common}><path d="M15 4V2" /><path d="M15 16v-2" /><path d="M8 9h2" /><path d="M20 9h2" /><path d="M17.8 11.8L19 13" /><path d="M15 9h0" /><path d="M17.8 6.2L19 5" /><path d="M3 21l9-9" /><path d="M12.2 6.2L11 5" /></svg>;
+    case "cloud":
+      return <svg {...common}><path d="M17.5 19a4.5 4.5 0 000-9 6 6 0 00-11.6 1.5A3.75 3.75 0 006.5 19z" /></svg>;
+    case "key":
+      return <svg {...common}><circle cx="8" cy="15" r="4" /><path d="M10.9 12.1L21 2" /><path d="M17 6l3 3" /><path d="M14 9l3 3" /></svg>;
     case "zoom-in":
       return <svg {...common}><circle cx="11" cy="11" r="7" /><path d="M21 21l-4.3-4.3" /><path d="M11 8v6" /><path d="M8 11h6" /></svg>;
     case "zoom-out":

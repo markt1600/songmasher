@@ -6,7 +6,7 @@ Built with Next.js (App Router), TypeScript, Tailwind v4 and Zustand. Designed t
 
 ## What it does
 
-- **Library** – every song you add is analysed once and saved in the browser (IndexedDB) with its analysis, grid and pitch corrections, and any Demucs stems. Reloading a song is instant and never re-runs separation. Pick a saved song for deck A or B from the strip at the top, or add new files there.
+- **Library** – every song you add is analysed once and saved with its analysis, grid and pitch corrections, and any Demucs stems. With a Vercel Blob store configured, the library lives in the cloud and follows you to any device; the browser keeps a local copy of what you've used so reloads are instant. Without Blob, the library is browser-only (IndexedDB). Pick a saved song for deck A or B from the strip at the top, add new files there, or delete songs you no longer want (a second click confirms, and the cloud copy goes too).
 - **Analysis on load** – tempo (with an octave sanity check), beat grid and downbeat, musical key with Camelot code, and per-bar energy / rhythm / vocal-presence curves. Runs in a worker, ~1 s per song.
 - **Foundation + clips** – one song plays continuously from a bar you choose; bars from either song become clips on three lanes. Clips are dragged, resized and repeated (double-click or `D`), and everything snaps to beats.
 - **Beat alignment** – every clip and the foundation are time-stretched (WSOLA, pitch-preserving) to the master tempo and started on the exact bar boundary, so the beats line up.
@@ -42,9 +42,10 @@ npx tsx scripts/dsp-check.ts   # synthetic click tracks: verifies BPM, downbeat,
 
 | Variable | Enables | Notes |
 | --- | --- | --- |
+| `BLOB_READ_WRITE_TOKEN` | Cloud library (songs, corrections and stems sync across devices) | Create a Vercel Blob store on the project (Storage tab) and Vercel adds this for you. Files are stored under `library/<song-id>/` with public, unguessable URLs. |
+| `REPLICATE_API_TOKEN` | AI stems (Demucs) | Needs the Blob token too: Replicate fetches the song from your library, and the finished stems are copied back into it. |
 | `ANTHROPIC_API_KEY` | "Ask Claude for a plan" in the advisor | Uses `claude-opus-5` with structured output. |
-| `REPLICATE_API_TOKEN` + `BLOB_READ_WRITE_TOKEN` | AI stems (Demucs) | Create a Vercel Blob store on the project to get the Blob token; songs are uploaded from the browser straight to Blob (public access) so Replicate can fetch them. |
-| `STEMS_ACCESS_CODE` | Protects the AI stems endpoints | Optional. Anyone using AI stems must enter this code once; it is stored in their browser. Recommended on a public deployment, since separation costs money. |
+| `ACCESS_CODE` | Protects the cloud library and the AI stems endpoints | Strongly recommended on a public deployment: without it anyone who finds the site can read, add to or delete your library and run paid separations. Users enter the code once; it is remembered in their browser. |
 | `DEMUCS_MODEL` / `DEMUCS_VERSION` / `DEMUCS_MODEL_VARIANT` | Override the Replicate model | Defaults to `ryan5453/demucs`, latest version, `htdemucs`. |
 
 `.env.example` lists the same variables for local use.
@@ -68,12 +69,13 @@ src/lib/store.ts    application state and all user actions
 src/lib/advisor.ts  local mashup heuristics
 src/lib/library.ts  IndexedDB song library (files, analysis, stems)
 src/components/     Header (transport), Library, Deck, Waveform, Timeline, Advisor
-src/app/api/        config, advise (Claude), stems (Replicate), stems/upload (Vercel Blob), stems/fetch
+src/lib/cloud.ts    client for the cloud library API
+src/app/api/        config, advise (Claude), library (+upload, stems), stems (Replicate), stems/fetch (audio proxy)
 ```
 
 ## Notes and limits
 
-- The library lives in the browser you used, not on the server, so it does not follow you between devices, and clearing site data removes it. The app asks the browser for persistent storage so it is not evicted automatically.
+- Without a Blob store the library lives only in the browser you used, and clearing site data removes it. With Blob, the browser copy is just a cache; deleting a song removes both.
 - Songs are held in memory as decoded audio. Two five-minute songs with AI stems use several hundred megabytes; a desktop browser is the intended environment.
 - Beat detection assumes a steady tempo. For live recordings or tempo changes, the grid controls let you correct the reading, but clips will drift over long stretches.
 - Quick stems rely on vocals being centre-panned, which is true for most modern mixes but not all.

@@ -1,11 +1,17 @@
-import { stemsAuthorized } from "@/lib/server/access";
+import { authorized, unauthorized } from "@/lib/server/access";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
-/** Streams a finished stem file from Replicate's delivery CDN to the browser (avoids CORS issues). */
+function allowed(u: URL): boolean {
+  if (u.protocol !== "https:") return false;
+  const h = u.hostname;
+  return h === "replicate.delivery" || h.endsWith(".replicate.delivery") || h.endsWith(".replicate.com") || h.endsWith(".vercel-storage.com");
+}
+
+/** Streams an audio file from Replicate or Vercel Blob to the browser (same-origin, so no CORS surprises). */
 export async function GET(request: Request): Promise<Response> {
-  if (!stemsAuthorized(request.headers.get("x-stems-code"))) return Response.json({ error: "Invalid access code" }, { status: 401 });
+  if (!authorized(request.headers.get("x-access-code"))) return unauthorized();
   const url = new URL(request.url).searchParams.get("url");
   if (!url) return Response.json({ error: "Missing url" }, { status: 400 });
   let target: URL;
@@ -14,10 +20,7 @@ export async function GET(request: Request): Promise<Response> {
   } catch {
     return Response.json({ error: "Bad url" }, { status: 400 });
   }
-  const host = target.hostname;
-  if (target.protocol !== "https:" || !(host === "replicate.delivery" || host.endsWith(".replicate.delivery") || host.endsWith(".replicate.com"))) {
-    return Response.json({ error: "Host not allowed" }, { status: 400 });
-  }
+  if (!allowed(target)) return Response.json({ error: "Host not allowed" }, { status: 400 });
   const upstream = await fetch(target.toString());
   if (!upstream.ok || !upstream.body) return Response.json({ error: `Upstream ${upstream.status}` }, { status: 502 });
   return new Response(upstream.body, {
