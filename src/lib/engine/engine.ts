@@ -26,6 +26,8 @@ interface PlayEvent {
 interface Scheduled {
   nodes: AudioScheduledSourceNode[];
   gains: GainNode[];
+  /** level nodes keyed by clip id (or "foundation") so gain can change while playing */
+  levels: Map<string, GainNode[]>;
   endCtxTime: number;
 }
 
@@ -166,6 +168,7 @@ export class Engine {
   private scheduleIteration(ctx: BaseAudioContext, dest: AudioNode, events: PlayEvent[], from: number, at: number, project: Project): Scheduled {
     const nodes: AudioScheduledSourceNode[] = [];
     const gains: GainNode[] = [];
+    const levels = new Map<string, GainNode[]>();
     const total = project.lengthBars * 4 * (60 / project.masterBpm);
     let endCtx = at + (total - from);
     for (const ev of events) {
@@ -180,19 +183,25 @@ export class Engine {
       if (dur <= 0.01 || offset >= buf.duration) continue;
       const src = ctx.createBufferSource();
       src.buffer = buf;
+      // fade node (0..1 click-free envelope) -> level node (user gain, adjustable live)
       const g = ctx.createGain();
       g.gain.setValueAtTime(0, when);
-      g.gain.linearRampToValueAtTime(ev.gain, when + FADE);
-      g.gain.setValueAtTime(ev.gain, when + dur - FADE);
+      g.gain.linearRampToValueAtTime(1, when + FADE);
+      g.gain.setValueAtTime(1, when + dur - FADE);
       g.gain.linearRampToValueAtTime(0, when + dur);
+      const level = ctx.createGain();
+      level.gain.value = ev.gain;
       src.connect(g);
-      g.connect(dest);
+      g.connect(level);
+      level.connect(dest);
       src.start(when, offset, Math.min(dur, buf.duration - offset));
       nodes.push(src);
       gains.push(g);
+      const key = ev.clipId ?? "foundation";
+      levels.set(key, [...(levels.get(key) ?? []), level]);
       endCtx = Math.max(endCtx, when + dur);
     }
-    return { nodes, gains, endCtxTime: endCtx };
+    return { nodes, gains, levels, endCtxTime: endCtx };
   }
 
   async play(project: Project, decks: EngineDecks, from: number, onProgress?: (label: string, v: number) => void): Promise<void> {
@@ -237,6 +246,7 @@ export class Engine {
       }
     } else if (now >= this.nextIterStart) {
       this.stop();
+      this.startOffset = 0;
       this.onEnded?.();
     }
   }
@@ -248,6 +258,13 @@ export class Engine {
     if (elapsed < 0) return this.startOffset;
     if (this.looping && this.loopLength > 0) return ((p % this.loopLength) + this.loopLength) % this.loopLength;
     return Math.min(p, this.loopLength);
+  }
+
+  /** Change the level of a playing clip (or "foundation") without rescheduling. */
+  setLevel(id: string, gain: number) {
+    if (this.current) for (const ev of this.current.events) if ((ev.clipId ?? "foundation") === id) ev.gain = gain;
+    const now = this.ctx.currentTime;
+    for (const s of this.scheduled) for (const n of s.levels.get(id) ?? []) n.gain.setTargetAtTime(gain, now, 0.015);
   }
 
   seek(sec: number) {

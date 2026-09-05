@@ -338,6 +338,11 @@ export const useStore = create<Store>((set, get) => {
       const foundation = { ...base, ...patch };
       const masterBpm = prev?.deckId === deckId ? s.project.masterBpm : d.analysis.bpm;
       set({ project: { ...s.project, foundation, masterBpm } });
+      const onlyGain = !!prev && prev.deckId === deckId && patch && Object.keys(patch).every((k) => k === "gain");
+      if (onlyGain) {
+        engine.setLevel("foundation", foundation.gain);
+        return;
+      }
       if (masterBpm !== s.project.masterBpm) engine.invalidateAll();
       refreshSuggestions();
       void restartIfPlaying();
@@ -401,6 +406,10 @@ export const useStore = create<Store>((set, get) => {
       const s = get();
       const clips = s.project.clips.map((c) => (c.id === id ? { ...c, ...patch } : c));
       set({ project: { ...s.project, clips, lengthBars: growToFit(clips, s.project.lengthBars) } });
+      if (Object.keys(patch).every((k) => k === "gain") && typeof patch.gain === "number") {
+        engine.setLevel(id, patch.gain);
+        return;
+      }
       void restartIfPlaying();
     },
 
