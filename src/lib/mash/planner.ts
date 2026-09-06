@@ -361,8 +361,10 @@ export function planMashup(songs: [PlannerSong, PlannerSong], constraints: PlanC
 
   const maxShift = constraints.maxShift ?? 3;
   const both = constraints.vocals === "both";
-  const templates: TemplateId[] = constraints.template
-    ? [constraints.template]
+  // A pinned template never silently cancels "both vocals": only a duet template can be pinned in that mode.
+  const pinned = constraints.template && (!both || constraints.template.startsWith("duet")) ? constraints.template : undefined;
+  const templates: TemplateId[] = pinned
+    ? [pinned]
     : both
       ? ["duet", "duet-verse", "classic", "call-response"]
       : layered

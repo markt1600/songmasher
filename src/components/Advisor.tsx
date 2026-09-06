@@ -1,11 +1,24 @@
 "use client";
-import { useState } from "react";
+import { useState, type ReactNode } from "react";
 import { useStore } from "@/lib/store";
 import { DECK_COLORS } from "@/lib/types";
 import type { PlanCandidate, PlanConstraints } from "@/lib/mash/planner";
 import { Icon } from "./ui";
 
 const KIND_ICON: Record<string, string> = { foundation: "anchor", tempo: "loop", key: "music", hook: "scissors", verse: "scissors", beat: "anchor", info: "check" };
+/** Every constraint explicitly cleared: the planner falls back to its own choices. */
+const RESET: PlanConstraints = { foundation: undefined, lengthBars: undefined, vocalEntryBar: undefined, hookBars: undefined, energy: undefined, maxShift: undefined, template: undefined, vocals: undefined };
+
+/** An adjust chip that stays lit while its constraint is active; clicking again clears it. */
+function Chip({ on, title, onClick, children }: { on: boolean; title?: string; onClick: () => void; children: ReactNode }) {
+  return (
+    <button className={`btn btn-xs ${on ? "text-accent-2 border-[#7c6cff]/60 bg-[#7c6cff]/15" : ""}`} onClick={onClick} title={title} aria-pressed={on}>
+      {on ? "✓ " : ""}
+      {children}
+    </button>
+  );
+}
+
 const TEMPLATE_NAME: Record<string, string> = { classic: "Classic", "vocal-first": "Vocal first", "call-response": "Call & response", extended: "Extended", duet: "Duet", "duet-verse": "Duet (verse first)" };
 
 function Meter({ label, value, title }: { label: string; value: number; title: string }) {
@@ -49,7 +62,9 @@ export default function Advisor() {
 
   // Quick adjustments apply instantly through the local search; with Claude on, it then re-chooses and explains.
   const quick = (patch: PlanConstraints, label: string) => {
-    planMashup({ ...constraints, ...patch });
+    const next: PlanConstraints = { ...constraints, ...patch };
+    for (const k of Object.keys(next) as (keyof PlanConstraints)[]) if (next[k] === undefined) delete next[k];
+    planMashup(next);
     if (config.ai) void refinePlan(label);
   };
 
@@ -215,20 +230,33 @@ export default function Advisor() {
           {/* Refinement */}
           <div className={`flex flex-wrap items-center gap-1.5 ${claudeBusy ? "thinking-dim" : ""}`}>
             <span className="label mr-1">Adjust</span>
-            <button
-              className={`btn btn-xs ${constraints.vocals === "both" ? "text-accent-2 border-[#7c6cff]/60 bg-[#7c6cff]/15" : ""}`}
-              onClick={() => quick({ vocals: constraints.vocals === "both" ? "one" : "both" }, constraints.vocals === "both" ? "only one vocal" : "use vocals from both songs, taking turns")}
+            <Chip
+              on={constraints.vocals === "both"}
               title="Let the two singers take turns: the other song's hook, then the foundation song's own vocal over its own instrumental. Never both at once."
+              onClick={() => quick({ vocals: constraints.vocals === "both" ? "one" : "both" }, constraints.vocals === "both" ? "only one vocal" : "use vocals from both songs, taking turns")}
             >
-              {constraints.vocals === "both" ? "✓ Both vocals" : "Both vocals"}
-            </button>
-            <button className="btn btn-xs" onClick={() => quick({ vocalEntryBar: 4 }, "bring the vocal in earlier")}>Vocal earlier</button>
-            <button className="btn btn-xs" onClick={() => quick({ energy: "higher", template: "classic" }, "more energy")}>More energy</button>
+              Both vocals
+            </Chip>
+            <Chip on={constraints.vocalEntryBar === 4} onClick={() => (constraints.vocalEntryBar === 4 ? quick({ vocalEntryBar: undefined }, "let the vocal enter where it fits best") : quick({ vocalEntryBar: 4 }, "bring the vocal in earlier"))}>
+              Vocal earlier
+            </Chip>
+            <Chip on={constraints.energy === "higher"} onClick={() => (constraints.energy === "higher" ? quick({ energy: undefined }, "normal energy") : quick({ energy: "higher" }, "more energy"))}>
+              More energy
+            </Chip>
             <button className="btn btn-xs" onClick={() => quick({ lengthBars: Math.max(24, (selected.lengthBars || 32) + 16) }, "make it longer")}>Longer</button>
             <button className="btn btn-xs" onClick={() => quick({ lengthBars: Math.max(16, (selected.lengthBars || 32) - 12) }, "make it shorter")}>Shorter</button>
-            <button className="btn btn-xs" onClick={() => quick({ foundation: selected.vocalDeck }, "swap the roles of the two songs")}>Swap roles</button>
-            <button className="btn btn-xs" onClick={() => quick({ maxShift: 0 }, "no pitch shifting")}>No pitch shift</button>
+            <Chip on={constraints.foundation !== undefined} title={constraints.foundation ? `Beat pinned to ${decks[constraints.foundation].name}` : "Swap which song carries the beat"} onClick={() => (constraints.foundation ? quick({ foundation: undefined }, "let the planner choose which song carries the beat") : quick({ foundation: selected.vocalDeck }, "swap the roles of the two songs"))}>
+              Swap roles
+            </Chip>
+            <Chip on={constraints.maxShift === 0} onClick={() => (constraints.maxShift === 0 ? quick({ maxShift: undefined }, "pitch shifting allowed again") : quick({ maxShift: 0 }, "no pitch shifting"))}>
+              No pitch shift
+            </Chip>
             <button className="btn btn-xs" onClick={() => quick({ hookBars: selected.clips[0]?.lengthBeats >= 32 ? 4 : 16 }, "change the hook length")}>{selected.clips[0]?.lengthBeats >= 32 ? "4-bar hooks" : "16-bar hooks"}</button>
+            {Object.values(constraints).some((v) => v !== undefined) && (
+              <button className="btn btn-xs text-muted" onClick={() => quick(RESET, "start over with no constraints")} title="Clear every adjustment">
+                Reset
+              </button>
+            )}
           </div>
           {config.ai && (
             <form

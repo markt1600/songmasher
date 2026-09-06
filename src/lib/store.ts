@@ -1802,7 +1802,9 @@ export const useStore = create<Store>((set, get) => {
       if (!songs) return [];
       const c = constraints ?? get().planConstraints;
       const cands = planMashup(songs, c);
-      const prev = get().selectedCandidateId;
+      // A re-search with the same constraints keeps the user's pick; changed constraints show their new best answer.
+      const sameConstraints = JSON.stringify(c) === JSON.stringify(get().planConstraints);
+      const prev = sameConstraints ? get().selectedCandidateId : null;
       const selected = cands.some((x) => x.id === prev) ? prev : (cands[0]?.id ?? null);
       set({ candidates: cands, selectedCandidateId: selected, planConstraints: c, claudePlan: cands.length ? { ...candidateToPlan(cands.find((x) => x.id === selected) ?? cands[0]), notes: [] } : null });
       return cands;
