@@ -1,4 +1,5 @@
 import { integratedLufs } from "../audio/master";
+import { localBeatPhase } from "../audio/align";
 import { barToTime, type SongAnalysis } from "../audio/analysis";
 import { audioBufferToChannels, channelsToAudioBuffer } from "../audio/wav";
 import type { AutomationPoint, Clip, DeckId, Project, StemKey, TransportOptions } from "../types";
@@ -192,6 +193,10 @@ export class Engine {
   private loudness = new Map<string, number>();
   /** level-match trims (linear) by clip id or "foundation" from the last prepare() */
   private trims = new Map<string, number>();
+  /** local beat-phase measurements per deck and source time */
+  private phases = new Map<string, number>();
+  /** timing nudges (seconds of timeline) by clip id from the last prepare() */
+  private timing = new Map<string, number>();
   onEnded: (() => void) | null = null;
 
   get ctx(): AudioContext {
@@ -220,6 +225,7 @@ export class Engine {
   invalidateDeck(deckId: DeckId) {
     for (const k of Array.from(this.cache.keys())) if (k.startsWith(`${deckId}:`)) this.cache.delete(k);
     for (const k of Array.from(this.loudness.keys())) if (k.startsWith(`${deckId}:`)) this.loudness.delete(k);
+    for (const k of Array.from(this.phases.keys())) if (k.startsWith(`${deckId}:`)) this.phases.delete(k);
   }
 
   invalidateAll() {
@@ -255,7 +261,68 @@ export class Engine {
     const unique = events.filter((e) => (keys.has(e.key) ? false : (keys.add(e.key), true)));
     for (const ev of unique) await this.getBuffer(ev, decks, project.masterBpm, onProgress);
     this.applyLevelMatch(project, decks, events);
+    this.applyTightTiming(project, decks, events);
     return events;
+  }
+
+  /** Real-beat offset of a deck's full mix around a source time, cached per 10 ms. */
+  private beatPhase(deck: EngineDeck, t: number): number {
+    const buf = deck.buffers.full;
+    if (!buf) return 0;
+    const key = `${deck.id}:${buf.length}:${Math.round(t * 100)}`;
+    const hit = this.phases.get(key);
+    if (hit !== undefined) return hit;
+    const bi = deck.analysis.beatInterval;
+    const half = bi * 8 + 0.1;
+    const s0 = Math.max(0, Math.floor((t - half) * buf.sampleRate));
+    const s1 = Math.min(buf.length, Math.ceil((t + half) * buf.sampleRate));
+    const mono = new Float32Array(s1 - s0);
+    for (let c = 0; c < Math.min(2, buf.numberOfChannels); c++) {
+      const d = buf.getChannelData(c).subarray(s0, s1);
+      for (let i = 0; i < mono.length; i++) mono[i] += d[i];
+    }
+    const phi = localBeatPhase(mono, buf.sampleRate, t - s0 / buf.sampleRate, bi);
+    this.phases.set(key, phi);
+    return phi;
+  }
+
+  /**
+   * Tight timing: a constant-tempo grid drifts against a real recording, so a clip cut at bar 90 can sit
+   * tens of milliseconds off the foundation's actual beats. Measure where the beats really fall in both
+   * songs (the clip at its source, the foundation where the clip lands) and shift the clip so real beat
+   * meets real beat. The foundation itself is never moved.
+   */
+  private applyTightTiming(project: Project, decks: EngineDecks, events: PlayEvent[]) {
+    this.timing.clear();
+    if (project.tightTiming === false) return;
+    const f = project.foundation;
+    const fDeck = f ? decks[f.deckId] : undefined;
+    if (!f || !fDeck?.buffers.full) return;
+    const fRatio = stretchRatio(fDeck, project.masterBpm);
+    const fSrc0 = barToTime(fDeck.analysis, f.startBar);
+    for (const ev of events) {
+      if (!ev.clipId) continue;
+      const deck = decks[ev.deckId];
+      if (!deck?.buffers.full) continue;
+      const ratio = stretchRatio(deck, project.masterBpm);
+      const srcT = ev.bufferOffsetSec / ratio;
+      const fSrcT = fSrc0 + ev.startSec / fRatio;
+      if (fSrcT >= fDeck.analysis.duration) continue;
+      const phiClip = this.beatPhase(deck, srcT); // seconds the clip's real beats sit after its grid
+      const phiF = this.beatPhase(fDeck, fSrcT); // same for the foundation where the clip lands
+      const shift = phiClip * ratio - phiF * fRatio; // timeline seconds to skip at the head of the clip
+      if (Math.abs(shift) < 0.002) continue;
+      const clamped = Math.max(-0.2, Math.min(0.2, shift));
+      ev.bufferOffsetSec = Math.max(0, ev.bufferOffsetSec + clamped);
+      this.timing.set(ev.clipId, -clamped);
+    }
+  }
+
+  /** Timing nudges from the last prepare(), in ms of timeline by clip id (positive = the clip now plays later). */
+  timingMs(): Record<string, number> {
+    const out: Record<string, number> = {};
+    for (const [k, v] of this.timing) out[k] = Math.round(v * 1000);
+    return out;
   }
 
   /** Integrated loudness of one stem's source region (song seconds), cached per region. */

@@ -97,6 +97,8 @@ export interface Project {
   loopRegion: LoopRegion | null;
   /** measure every part's loudness and trim it to a common level (default on; false switches it off) */
   levelMatch?: boolean;
+  /** nudge each clip onto the foundation's real beats where the grids drift (default on; false switches it off) */
+  tightTiming?: boolean;
 }
 
 export const emptyAutomation = (): Automation => ({ level: [], filter: [] });

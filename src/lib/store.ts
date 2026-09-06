@@ -3,7 +3,7 @@ import { create } from "zustand";
 import { barToTime, type SongAnalysis } from "./audio/analysis";
 import { vocalProfileMatches } from "./audio/vocal";
 import { audioBufferToChannels, channelsToAudioBuffer } from "./audio/wav";
-import { firstOnsetOffset } from "./audio/align";
+import { firstOnsetOffset, stemLagSamples } from "./audio/align";
 import { decodeArrayBuffer, decodeFile, getAudioContext, toMono } from "./engine/context";
 import { Engine, type EngineDecks } from "./engine/engine";
 import { runAnalysis, runQuickStems, runSections, runVocalProfile } from "./workers";
@@ -245,6 +245,10 @@ interface Store {
   setLevelMatch: (on: boolean) => void;
   /** dB trims the engine applied at the last play, by clip id (and "foundation") */
   levelTrims: Record<string, number>;
+  /** turn automatic beat-tightening on or off for this arrangement */
+  setTightTiming: (on: boolean) => void;
+  /** ms each clip was nudged onto the foundation's real beats at the last play */
+  timingShifts: Record<string, number>;
   setZoom: (z: number) => void;
   separateQuick: (deckId: DeckId) => Promise<void>;
   separateAI: (deckId: DeckId, variant?: DemucsVariant) => Promise<void>;
@@ -570,6 +574,27 @@ export const useStore = create<Store>((set, get) => {
       }
       return out;
     };
+    // Separated stems can come back a few milliseconds off the song they were cut from (codec priming,
+    // resampling). Their sum is nearly the original, so measure the lag once and shift every stem onto the mix.
+    const all = mix(["drums", "bass", "other", "vocals"]);
+    if (all && all.sampleRate === full.sampleRate) {
+      const lag = stemLagSamples(full.getChannelData(0), all.getChannelData(0), full.sampleRate);
+      if (lag !== 0) {
+        for (const k of ["drums", "bass", "other", "vocals"] as lib.AiStemKey[]) {
+          const b = decoded[k];
+          if (!b) continue;
+          const shifted = ctx.createBuffer(b.numberOfChannels, b.length, b.sampleRate);
+          for (let c = 0; c < b.numberOfChannels; c++) {
+            const src = b.getChannelData(c);
+            const dst = shifted.getChannelData(c);
+            if (lag > 0) dst.set(src.subarray(lag), 0); // stems late: drop the head
+            else dst.set(src.subarray(0, src.length + lag), -lag); // stems early: delay them
+          }
+          decoded[k] = shifted;
+        }
+        console.info(`Stems aligned to the mix by ${((lag / full.sampleRate) * 1000).toFixed(1)} ms`);
+      }
+    }
     return {
       full,
       vocals: decoded.vocals,
@@ -918,6 +943,7 @@ export const useStore = create<Store>((set, get) => {
     auditioning: false,
     soloClipId: null,
     levelTrims: {},
+    timingShifts: {},
     planHistory: [],
     claudeBusy: false,
     claudeError: null,
@@ -1654,6 +1680,12 @@ export const useStore = create<Store>((set, get) => {
       void restartIfPlaying();
     },
 
+    setTightTiming: (on) => {
+      setProject({ ...get().project, tightTiming: on });
+      if (!on) set({ timingShifts: {} });
+      void restartIfPlaying();
+    },
+
     setZoom: (z) => set({ zoom: Math.max(4, Math.min(60, z)) }),
 
     separateQuick: async (deckId) => {
@@ -1775,7 +1807,7 @@ export const useStore = create<Store>((set, get) => {
       try {
         engine.onEnded = () => set({ playing: false });
         await engine.play(s.project, decks, start, s.transport, (label, value) => set({ busy: { label, value } }));
-        set({ playing: true, busy: null, levelTrims: engine.trimsDb() });
+        set({ playing: true, busy: null, levelTrims: engine.trimsDb(), timingShifts: engine.timingMs() });
       } catch (err) {
         set({ busy: null, playing: false });
         get().showToast(`Playback failed: ${(err as Error).message}`);

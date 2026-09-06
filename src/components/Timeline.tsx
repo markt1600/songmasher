@@ -35,7 +35,8 @@ export default function Timeline() {
   const previewDeck = useStore((s) => s.previewDeck);
   const soloClipId = useStore((s) => s.soloClipId);
   const levelMatch = project.levelMatch !== false;
-  const { setZoom, selectClip, soloClip, setLevelMatch, updateClip, removeSelected, repeatSelected, setLengthBars, seek, clearClips, setFoundation, clearFoundation, addClip, moveClips, nudgeClip, autoAlignClip, setLoopRegion, addCue, updateCue, removeCue, loopSelected } = useStore();
+  const tightTiming = project.tightTiming !== false;
+  const { setZoom, selectClip, soloClip, setLevelMatch, setTightTiming, updateClip, removeSelected, repeatSelected, setLengthBars, seek, clearClips, setFoundation, clearFoundation, addClip, moveClips, nudgeClip, autoAlignClip, setLoopRegion, addCue, updateCue, removeCue, loopSelected } = useStore();
   const scrollRef = useRef<HTMLDivElement>(null);
   const lanesRef = useRef<HTMLDivElement>(null);
   const register = useDnd((s) => s.register);
@@ -165,6 +166,17 @@ export default function Timeline() {
             <Icon name="check" size={11} />
           </span>{" "}
           Match levels
+        </button>
+        <button
+          className={`btn btn-sm ${tightTiming ? "text-accent-2 border-[#7c6cff]/60" : "text-muted"}`}
+          onClick={() => setTightTiming(!tightTiming)}
+          aria-pressed={tightTiming}
+          title={tightTiming ? "Tight timing is on: each clip is nudged onto the foundation's real beats where the songs' grids drift. Click to place clips exactly on the grid instead." : "Tight timing is off: clips sit exactly on the nominal grid. Click to nudge them onto the foundation's real beats automatically."}
+        >
+          <span style={{ opacity: tightTiming ? 1 : 0.25, display: "inline-flex" }}>
+            <Icon name="check" size={11} />
+          </span>{" "}
+          Tight timing
         </button>
         <div className="flex-1" />
         {selected.length > 0 && (
@@ -601,6 +613,7 @@ function FoundationBlock({ deckId, stem, startBar, zoom, widthBeats, masterBpm, 
 function ClipView({ clip, zoom, selected, selectedIds, solo, dimmed, onSelect, onMove, onResize, onRepeat, onSolo }: { clip: Clip; zoom: number; selected: boolean; selectedIds: string[]; solo: boolean; dimmed: boolean; onSelect: (add: boolean) => void; onMove: (deltaBeats: number, deltaLane: number) => void; onResize: (len: number) => void; onRepeat: () => void; onSolo: () => void }) {
   const deck = useStore((s) => s.decks[clip.deckId]);
   const trimDb = useStore((s) => s.levelTrims[clip.id]);
+  const timingMs = useStore((s) => s.timingShifts[clip.id]);
   const color = DECK_COLORS[clip.deckId];
   const [drag, setDrag] = useState<{ mode: "move" | "resize"; startX: number; startY: number; origLen: number; plain: boolean } | null>(null);
   const [live, setLive] = useState<{ dBeats: number; dLane: number; len: number } | null>(null);
@@ -709,10 +722,20 @@ function ClipView({ clip, zoom, selected, selectedIds, solo, dimmed, onSelect, o
           {clip.mode === "swap" ? " · swap" : ""}
           {clip.offsetMs ? ` · ${clip.offsetMs > 0 ? "+" : ""}${clip.offsetMs}ms` : ""}
         </span>
-        {trimDb !== undefined && Math.abs(trimDb) >= 0.5 && (
-          <span className="ml-auto shrink-0 font-mono tabular-nums text-[9.5px] px-1 rounded bg-black/25 text-black/80" title={`Level matching trimmed this part by ${trimDb > 0 ? "+" : ""}${trimDb.toFixed(1)} dB`}>
-            {trimDb > 0 ? "+" : ""}
-            {trimDb.toFixed(1)} dB
+        {((trimDb !== undefined && Math.abs(trimDb) >= 0.5) || (timingMs !== undefined && Math.abs(timingMs) >= 2)) && (
+          <span className="ml-auto shrink-0 flex items-center gap-1">
+            {timingMs !== undefined && Math.abs(timingMs) >= 2 && (
+              <span className="font-mono tabular-nums text-[9.5px] px-1 rounded bg-black/25 text-black/80" title={`Tight timing moved this clip ${Math.abs(timingMs)} ms ${timingMs > 0 ? "later" : "earlier"} to sit on the foundation's real beats`}>
+                {timingMs > 0 ? "+" : ""}
+                {timingMs} ms
+              </span>
+            )}
+            {trimDb !== undefined && Math.abs(trimDb) >= 0.5 && (
+              <span className="font-mono tabular-nums text-[9.5px] px-1 rounded bg-black/25 text-black/80" title={`Level matching trimmed this part by ${trimDb > 0 ? "+" : ""}${trimDb.toFixed(1)} dB`}>
+                {trimDb > 0 ? "+" : ""}
+                {trimDb.toFixed(1)} dB
+              </span>
+            )}
           </span>
         )}
       </div>
