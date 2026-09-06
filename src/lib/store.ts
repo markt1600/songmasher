@@ -498,12 +498,24 @@ export const useStore = create<Store>((set, get) => {
     const inflight = uploading.get(song.id);
     if (inflight) return inflight;
     const p = (async () => {
-      const blob = await lib.getFile(`${song.id}:full`);
-      if (!blob) return undefined;
+      let blob: Blob | undefined = await lib.getFile(`${song.id}:full`);
+      if (!blob) {
+        // The library record can outlive its stored file; a deck that has the song loaded still holds the original.
+        const deck = (["A", "B"] as DeckId[]).map((d) => get().decks[d]).find((d) => d.songId === song.id && d.file);
+        if (deck?.file) {
+          blob = deck.file;
+          try {
+            await lib.putFile(`${song.id}:full`, blob);
+          } catch {
+            /* keep going with the in-memory file */
+          }
+        }
+      }
+      if (!blob) throw new Error(`The original audio for “${song.name}” is not on this device. Add the file again to upload it.`);
       set({ syncing: `Uploading ${song.name}` });
       try {
         const url = await withCode((code) => cloud.cloudUploadSong(song.id, blob, song.fileName, code));
-        if (!url) return undefined;
+        if (!url) throw new Error("The cloud library needs its access code before it can upload");
         // Write the cloud record first; only a song the cloud actually lists may be flagged as cloud-backed,
         // otherwise a refresh could mistake it for one deleted elsewhere and drop it locally.
         const withUrl = (await lib.updateSong(song.id, { fileUrl: url })) ?? { ...song, fileUrl: url };
@@ -1698,7 +1710,7 @@ export const useStore = create<Store>((set, get) => {
       setDeck(deckId, { stemBusy: true, stemProgress: "Uploading song" });
       try {
         const audioUrl = await ensureCloudFile(song);
-        if (!audioUrl) throw new Error("Upload cancelled");
+        if (!audioUrl) throw new Error("The song could not be uploaded for separation");
         const code = get().accessCode;
         setDeck(deckId, { stemProgress: "Starting Demucs" });
         const startRes = await fetch("/api/stems", {
