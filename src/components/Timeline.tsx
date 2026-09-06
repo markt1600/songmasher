@@ -33,7 +33,8 @@ export default function Timeline() {
   const zoom = useStore((s) => s.zoom);
   const selectedClipIds = useStore((s) => s.selectedClipIds);
   const previewDeck = useStore((s) => s.previewDeck);
-  const { setZoom, selectClip, updateClip, removeSelected, repeatSelected, setLengthBars, seek, clearClips, setFoundation, clearFoundation, addClip, moveClips, nudgeClip, autoAlignClip, setLoopRegion, addCue, updateCue, removeCue, loopSelected } = useStore();
+  const soloClipId = useStore((s) => s.soloClipId);
+  const { setZoom, selectClip, soloClip, updateClip, removeSelected, repeatSelected, setLengthBars, seek, clearClips, setFoundation, clearFoundation, addClip, moveClips, nudgeClip, autoAlignClip, setLoopRegion, addCue, updateCue, removeCue, loopSelected } = useStore();
   const scrollRef = useRef<HTMLDivElement>(null);
   const lanesRef = useRef<HTMLDivElement>(null);
   const register = useDnd((s) => s.register);
@@ -101,7 +102,8 @@ export default function Timeline() {
       const el = playheadRef;
       if (el) {
         const st = useStore.getState();
-        const beat = engine.position() / spb;
+        const solo = st.soloClipId ? st.project.clips.find((c) => c.id === st.soloClipId) : undefined;
+        const beat = engine.position() / spb + (solo?.startBeat ?? 0);
         el.style.transform = `translateX(${beat * zoom}px)`;
         el.style.opacity = st.previewDeck ? "0.25" : "1";
         const sc = scrollRef.current;
@@ -332,7 +334,7 @@ export default function Timeline() {
             )}
 
             {project.clips.map((c) => (
-              <ClipView key={c.id} clip={c} zoom={zoom} selected={selectedClipIds.includes(c.id)} selectedIds={selectedClipIds} onSelect={(add) => selectClip(c.id, { add })} onMove={(db, dl) => moveClips(selectedClipIds.includes(c.id) ? selectedClipIds : [c.id], db, dl)} onResize={(len) => updateClip(c.id, { lengthBeats: len })} onRepeat={repeatSelected} />
+              <ClipView key={c.id} clip={c} zoom={zoom} selected={selectedClipIds.includes(c.id)} selectedIds={selectedClipIds} solo={soloClipId === c.id} dimmed={soloClipId !== null && soloClipId !== c.id} onSelect={(add) => selectClip(c.id, { add })} onMove={(db, dl) => moveClips(selectedClipIds.includes(c.id) ? selectedClipIds : [c.id], db, dl)} onResize={(len) => updateClip(c.id, { lengthBeats: len })} onRepeat={repeatSelected} onSolo={() => void soloClip(c.id)} />
             ))}
 
             {dropHover && dragPayload?.kind === "selection" && dropHover.lane !== undefined && (
@@ -552,17 +554,21 @@ function FoundationBlock({ deckId, startBar, zoom, widthBeats, masterBpm, clips,
   );
 }
 
-function ClipView({ clip, zoom, selected, selectedIds, onSelect, onMove, onResize, onRepeat }: { clip: Clip; zoom: number; selected: boolean; selectedIds: string[]; onSelect: (add: boolean) => void; onMove: (deltaBeats: number, deltaLane: number) => void; onResize: (len: number) => void; onRepeat: () => void }) {
+function ClipView({ clip, zoom, selected, selectedIds, solo, dimmed, onSelect, onMove, onResize, onRepeat, onSolo }: { clip: Clip; zoom: number; selected: boolean; selectedIds: string[]; solo: boolean; dimmed: boolean; onSelect: (add: boolean) => void; onMove: (deltaBeats: number, deltaLane: number) => void; onResize: (len: number) => void; onRepeat: () => void; onSolo: () => void }) {
   const deck = useStore((s) => s.decks[clip.deckId]);
   const color = DECK_COLORS[clip.deckId];
-  const [drag, setDrag] = useState<{ mode: "move" | "resize"; startX: number; startY: number; origLen: number } | null>(null);
+  const [drag, setDrag] = useState<{ mode: "move" | "resize"; startX: number; startY: number; origLen: number; plain: boolean } | null>(null);
   const [live, setLive] = useState<{ dBeats: number; dLane: number; len: number } | null>(null);
+  // A plain click (no drag, no modifier) plays the clip alone. It waits a beat so a double-click (repeat) can cancel it.
+  const clickTimer = useRef<number | null>(null);
+  useEffect(() => () => { if (clickTimer.current) window.clearTimeout(clickTimer.current); }, []);
 
   const onPointerDown = (e: React.PointerEvent, mode: "move" | "resize") => {
     e.stopPropagation();
-    if (!selected || e.shiftKey || e.metaKey || e.ctrlKey) onSelect(e.shiftKey || e.metaKey || e.ctrlKey);
+    const modifier = e.shiftKey || e.metaKey || e.ctrlKey;
+    if (!selected || modifier) onSelect(modifier);
     (e.currentTarget as HTMLElement).setPointerCapture(e.pointerId);
-    setDrag({ mode, startX: e.clientX, startY: e.clientY, origLen: clip.lengthBeats });
+    setDrag({ mode, startX: e.clientX, startY: e.clientY, origLen: clip.lengthBeats, plain: mode === "move" && !modifier && e.button === 0 });
   };
   const onPointerMove = (e: React.PointerEvent) => {
     if (!drag) return;
@@ -575,13 +581,27 @@ function ClipView({ clip, zoom, selected, selectedIds, onSelect, onMove, onResiz
       setLive({ dBeats: 0, dLane: 0, len: Math.max(1, Math.round((drag.origLen + dBeatsRaw) / snap) * snap) });
     }
   };
-  const onPointerUp = () => {
+  const onPointerUp = (e: React.PointerEvent) => {
     if (drag && live) {
       if (drag.mode === "move") onMove(live.dBeats, live.dLane);
       else if (live.len !== clip.lengthBeats) onResize(live.len);
     }
+    const moved = drag ? Math.hypot(e.clientX - drag.startX, e.clientY - drag.startY) > 4 : true;
+    if (drag?.plain && !moved) {
+      if (clickTimer.current) window.clearTimeout(clickTimer.current);
+      clickTimer.current = window.setTimeout(() => {
+        clickTimer.current = null;
+        onSolo();
+      }, 230);
+    }
     setDrag(null);
     setLive(null);
+  };
+  const cancelClick = () => {
+    if (clickTimer.current) {
+      window.clearTimeout(clickTimer.current);
+      clickTimer.current = null;
+    }
   };
 
   const startBeat = Math.max(0, clip.startBeat + (live?.dBeats ?? 0));
@@ -595,26 +615,48 @@ function ClipView({ clip, zoom, selected, selectedIds, onSelect, onMove, onResiz
     <div
       className="clip"
       data-selected={selected}
+      data-solo={solo}
       style={{
         left: startBeat * zoom,
         width: w,
         top: laneTop(lane) + 5,
         height: LANE_H - 10,
         background: `linear-gradient(180deg, ${color.main}e6, ${color.main}99)`,
-        borderColor: selected ? "white" : color.main,
+        borderColor: selected || solo ? "white" : color.main,
         borderStyle: clip.mode === "swap" ? "dashed" : "solid",
-        opacity: clip.gain === 0 ? 0.4 : 1,
+        opacity: (clip.gain === 0 ? 0.4 : 1) * (dimmed ? 0.55 : 1),
       }}
       onPointerDown={(e) => onPointerDown(e, "move")}
       onPointerMove={onPointerMove}
       onPointerUp={onPointerUp}
-      onDoubleClick={onRepeat}
-      title={`${deck.name} · bars ${clip.srcBar + 1}–${clip.srcBar + Math.ceil(clip.lengthBeats / 4)} · ${STEM_LABELS[clip.stem]}\nDrag to move · shift-click to multi-select · right edge resizes · double-click repeats`}
+      onDoubleClick={() => {
+        cancelClick();
+        onRepeat();
+      }}
+      title={`${deck.name} · bars ${clip.srcBar + 1}–${clip.srcBar + Math.ceil(clip.lengthBeats / 4)} · ${STEM_LABELS[clip.stem]}\nClick to play this clip alone (click again to stop) · drag to move · shift-click to multi-select · right edge resizes · double-click repeats`}
     >
       <MiniWave deckId={clip.deckId} srcBar={clip.srcBar} lengthBeats={lengthBeats} width={w} height={LANE_H - 30} />
       {fadeInW > 0 && <div className="absolute top-0 bottom-0 left-0 pointer-events-none" style={{ width: fadeInW, background: "linear-gradient(90deg, rgba(0,0,0,0.55), transparent)" }} />}
       {fadeOutW > 0 && <div className="absolute top-0 bottom-0 right-0 pointer-events-none" style={{ width: fadeOutW, background: "linear-gradient(270deg, rgba(0,0,0,0.55), transparent)" }} />}
-      <div className="absolute top-1.5 left-2.5 right-3 text-[11px] flex items-center gap-1.5 text-black/85 font-medium">
+      <div className="absolute top-1.5 left-2 right-3 text-[11px] flex items-center gap-1.5 text-black/85 font-medium">
+        <button
+          className="clip-play"
+          data-on={solo}
+          onPointerDown={(e) => {
+            e.stopPropagation();
+            e.preventDefault();
+          }}
+          onClick={(e) => {
+            e.stopPropagation();
+            cancelClick();
+            onSolo();
+          }}
+          onDoubleClick={(e) => e.stopPropagation()}
+          title={solo ? "Stop" : "Play this clip alone"}
+          aria-label={solo ? "Stop clip" : "Play clip alone"}
+        >
+          <Icon name={solo ? "stop" : "play"} size={9} />
+        </button>
         <span className="font-bold">{clip.deckId}</span>
         <span className="truncate">{deck.name}</span>
         <span className="font-mono tabular-nums opacity-70 shrink-0 text-[10px]">

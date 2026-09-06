@@ -8,6 +8,7 @@ export default function Header() {
   const project = useStore((s) => s.project);
   const playing = useStore((s) => s.playing);
   const previewDeck = useStore((s) => s.previewDeck);
+  const soloClipId = useStore((s) => s.soloClipId);
   const busy = useStore((s) => s.busy);
   const decks = useStore((s) => s.decks);
   const { play, pause, stop, toggleLoop, setMasterBpm, adoptDeckTempo, exportMix, toggleMetronome, toggleCountIn, undo, redo, saveProject, saveProjectAs, newProject } = useStore();
@@ -157,6 +158,7 @@ export default function Header() {
           <div className="text-[10.5px] text-muted mt-[3px]">
             bar <span ref={barRef}>1.1</span>
             {previewDeck && <span className="ml-1 text-warn">· audition {previewDeck}</span>}
+            {soloClipId && <span className="ml-1 text-warn">· clip solo</span>}
           </div>
         </div>
 

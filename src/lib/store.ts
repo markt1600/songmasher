@@ -157,6 +157,10 @@ interface Store {
   planConstraints: PlanConstraints;
   claudeNotes: ClaudeNotes | null;
   auditioning: boolean;
+  /** clip currently playing on its own (click on a clip); null when the arrangement or nothing is playing */
+  soloClipId: string | null;
+  /** play one clip by itself, on the master tempo and pitch it would have in the mix; call again to stop */
+  soloClip: (id: string) => Promise<void>;
   planMashup: (constraints?: PlanConstraints) => PlanCandidate[];
   selectCandidate: (id: string) => void;
   auditionCandidate: (id: string) => Promise<void>;
@@ -278,6 +282,12 @@ export const useStore = create<Store>((set, get) => {
   const restartIfPlaying = async () => {
     const s = get();
     if (!s.playing || s.previewDeck) return;
+    if (s.soloClipId) {
+      // an edit while a clip plays alone: stop the solo rather than launching the whole arrangement
+      engine.stop();
+      set({ playing: false, soloClipId: null });
+      return;
+    }
     const pos = engine.position();
     await get().play(pos);
   };
@@ -846,6 +856,7 @@ export const useStore = create<Store>((set, get) => {
     planConstraints: {},
     claudeNotes: null,
     auditioning: false,
+    soloClipId: null,
     planHistory: [],
     claudeBusy: false,
     claudeError: null,
@@ -1654,7 +1665,7 @@ export const useStore = create<Store>((set, get) => {
       const decks = engineDecks(s.decks);
       if (Object.keys(decks).length === 0) return;
       const start = typeof from === "number" ? from : engine.position();
-      set({ previewDeck: null, busy: { label: "Syncing", value: 0 } });
+      set({ previewDeck: null, soloClipId: null, busy: { label: "Syncing", value: 0 } });
       try {
         engine.onEnded = () => set({ playing: false });
         await engine.play(s.project, decks, start, s.transport, (label, value) => set({ busy: { label, value } }));
@@ -1667,12 +1678,12 @@ export const useStore = create<Store>((set, get) => {
 
     pause: () => {
       engine.stop();
-      set({ playing: false, previewDeck: null });
+      set({ playing: false, previewDeck: null, soloClipId: null });
     },
 
     stop: () => {
       engine.stop();
-      set({ playing: false, previewDeck: null });
+      set({ playing: false, previewDeck: null, soloClipId: null });
       engine.seek(0);
     },
 
@@ -1699,7 +1710,7 @@ export const useStore = create<Store>((set, get) => {
         cues: [],
         loopRegion: null,
       };
-      set({ busy: { label: "Syncing", value: 0 }, previewDeck: deckId });
+      set({ busy: { label: "Syncing", value: 0 }, previewDeck: deckId, soloClipId: null });
       try {
         engine.onEnded = () => set({ playing: false, previewDeck: null });
         await engine.play(project, decks, 0, { metronome: false, countIn: false }, (label, value) => set({ busy: { label, value } }));
@@ -1844,7 +1855,7 @@ export const useStore = create<Store>((set, get) => {
         vd.semitones = c.semitones;
         engine.invalidateDeck(c.vocalDeck);
       }
-      set({ busy: { label: "Preparing audition", value: 0 }, auditioning: true, previewDeck: null });
+      set({ busy: { label: "Preparing audition", value: 0 }, auditioning: true, previewDeck: null, soloClipId: null });
       try {
         engine.onEnded = () => set({ playing: false, auditioning: false });
         await engine.play(project, decks, 0, { metronome: false, countIn: false }, (label, value) => set({ busy: { label, value } }));
@@ -1861,9 +1872,43 @@ export const useStore = create<Store>((set, get) => {
       }
     },
 
+    soloClip: async (id) => {
+      const s = get();
+      if (s.soloClipId === id) {
+        engine.stop();
+        set({ playing: false, soloClipId: null });
+        return;
+      }
+      const clip = s.project.clips.find((c) => c.id === id);
+      if (!clip) return;
+      const decks = engineDecks(s.decks);
+      if (!decks[clip.deckId]) return;
+      // The clip alone, from the top of a scratch arrangement: same tempo, stem, pitch, gain and fades as in the mix.
+      const project: Project = {
+        masterBpm: s.project.masterBpm,
+        foundation: null,
+        clips: [{ ...clip, startBeat: 0, mode: "layer" }],
+        lengthBars: Math.max(0.25, clip.lengthBeats / 4),
+        loop: false,
+        automation: emptyAutomation(),
+        cues: [],
+        loopRegion: null,
+      };
+      set({ busy: { label: "Preparing clip", value: 0 }, soloClipId: id, auditioning: false, previewDeck: null });
+      try {
+        engine.onEnded = () => set((st) => (st.soloClipId === id ? { playing: false, soloClipId: null } : {}));
+        await engine.play(project, decks, 0, { metronome: false, countIn: false }, (label, value) => set({ busy: { label, value } }));
+        if (get().soloClipId !== id) return; // something else started meanwhile
+        set({ playing: true, busy: null });
+      } catch (err) {
+        set({ busy: null, playing: false, soloClipId: null });
+        get().showToast(`Could not play clip: ${(err as Error).message}`);
+      }
+    },
+
     stopAudition: () => {
       engine.stop();
-      set({ playing: false, auditioning: false });
+      set({ playing: false, auditioning: false, soloClipId: null });
     },
 
     applyCandidate: (id) => {
