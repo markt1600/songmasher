@@ -118,6 +118,8 @@ export interface ClaudePlan {
   pitchShift: { deck: DeckId; semitones: number; reason: string } | null;
   arrangement: { deck: DeckId; srcBar: number; lengthBars: number; startBar: number; lane: number; label: string; stem: StemKey; mode: "layer" | "swap"; exact?: { startBeat: number; lengthBeats: number; fadeIn: number; fadeOut: number } }[];
   tips: string[];
+  /** arrangement length in bars (includes the outro after the last clip) */
+  lengthBars?: number;
   /** which songs would benefit from (better) stems, and which Demucs variant to use */
   stemAdvice?: { deck: DeckId; variant: DemucsVariant; reason: string }[];
   /** edits the app's own rules made to the plan */
@@ -729,6 +731,7 @@ export const useStore = create<Store>((set, get) => {
     summary: c.description,
     foundation: { deck: c.foundation.deck, startBar: c.foundation.startBar, stem: c.foundation.stem, reason: "" },
     masterBpm: c.masterBpm,
+    lengthBars: c.lengthBars,
     pitchShift: c.semitones ? { deck: c.vocalDeck, semitones: c.semitones, reason: "" } : null,
     arrangement: c.clips.map((k, i) => ({
       deck: k.deck,
@@ -1902,9 +1905,23 @@ export const useStore = create<Store>((set, get) => {
       if (plan.pitchShift) g.setDeckPitch(plan.pitchShift.deck, plan.pitchShift.semitones);
       const clips: Clip[] = checked.clips.map((c) => ({ ...c, id: newId() }));
       const st = get();
-      setProject({ ...st.project, clips, lengthBars: growToFit(clips, 8) });
+      // The timeline takes the plan's length (clips plus outro), never shorter than the clips need,
+      // and never longer than the foundation song can supply from its start bar.
+      const fDeck = st.decks[checked.foundation.deckId];
+      const fa = fDeck.analysis;
+      let lengthBars = Math.max(plan.lengthBars ?? 0, growToFit(clips, 8));
+      if (fa) {
+        const ratio = fa.bpm / st.project.masterBpm;
+        const spb = 60 / st.project.masterBpm;
+        const available = Math.floor(((fa.duration - barToTime(fa, checked.foundation.startBar)) * ratio) / spb / 4);
+        if (available >= 8 && lengthBars > available) lengthBars = available;
+      }
+      // A loop region from earlier work would hold playback inside a slice of the new arrangement.
+      const hadRegion = !!st.project.loopRegion;
+      setProject({ ...st.project, clips, lengthBars, loopRegion: null, cues: st.project.cues.filter((c) => c.beat <= lengthBars * 4) });
       set({ selectedClipIds: [] });
-      g.showToast(checked.notes.length ? "Applied Claude's plan (with a few rule fixes)" : "Applied Claude's plan");
+      engine.seek(0);
+      g.showToast(`${checked.notes.length ? "Applied the plan with a few rule fixes" : "Applied the plan"} · ${lengthBars} bars${hadRegion ? " · loop region cleared" : ""}`);
     },
   } satisfies Store;
 
