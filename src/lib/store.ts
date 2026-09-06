@@ -1,6 +1,7 @@
 "use client";
 import { create } from "zustand";
 import { barToTime, type SongAnalysis } from "./audio/analysis";
+import { vocalProfileMatches } from "./audio/vocal";
 import { audioBufferToChannels, channelsToAudioBuffer } from "./audio/wav";
 import { firstOnsetOffset } from "./audio/align";
 import { decodeArrayBuffer, decodeFile, getAudioContext, toMono } from "./engine/context";
@@ -321,7 +322,7 @@ export const useStore = create<Store>((set, get) => {
     setDeck(deckId, { analysis: { ...analysis, sections: keep ? prev!.sections : undefined, sectionsEdited: keep ? true : false }, selection: null, vocal: null });
     void refreshSections(deckId, !keep);
     const songId = get().decks[deckId].songId;
-    if (songId) void persistSong(songId, { analysis, bpm: analysis.bpm, keyName: analysis.key.name, camelot: analysis.key.camelot });
+    if (songId) void persistSong(songId, { analysis, vocal: null, bpm: analysis.bpm, keyName: analysis.key.name, camelot: analysis.key.camelot });
     const s = get();
     if (s.project.foundation?.deckId === deckId) {
       set({ project: { ...s.project, masterBpm: analysis.bpm } });
@@ -522,7 +523,7 @@ export const useStore = create<Store>((set, get) => {
       duration: buffer.duration,
       sampleRate: buffer.sampleRate,
       analysis: song.analysis,
-      vocal: song.vocal ?? null,
+      vocal: vocalProfileMatches(song.vocal, song.analysis) ? song.vocal : null,
       semitones: song.semitones,
       status: "ready",
       progress: 1,
@@ -565,7 +566,7 @@ export const useStore = create<Store>((set, get) => {
         if (get().decks[deckId].songId !== song.id) return; // deck changed meanwhile
         engine.invalidateDeck(deckId);
         setDeck(deckId, { buffers: buildAiBuffers(buffer, decoded), stemSource: "ai", stemBusy: false, stemProgress: "" });
-        if (!song.vocal || !song.analysis.barChroma) void computeVocalProfile(deckId);
+        if (!get().decks[deckId].vocal || !song.analysis.barChroma) void computeVocalProfile(deckId);
         refreshSuggestions();
       } catch {
         setDeck(deckId, { stemBusy: false, stemProgress: "" });
@@ -705,7 +706,13 @@ export const useStore = create<Store>((set, get) => {
     for (const id of ["A", "B"] as DeckId[]) {
       const d = s.decks[id];
       if (d.status !== "ready" || !d.analysis) continue;
-      list.push({ deck: id, name: d.name, analysis: d.analysis, vocal: d.vocal, stems: Object.keys(d.buffers) as StemKey[] });
+      const vocal = vocalProfileMatches(d.vocal, d.analysis) ? d.vocal : null;
+      if (!vocal && d.vocal) {
+        // stale profile (grid changed, or an older save without a grid stamp): drop it and measure again
+        setDeck(id, { vocal: null });
+        if (d.stemSource === "ai" && d.buffers.vocals) void computeVocalProfile(id);
+      }
+      list.push({ deck: id, name: d.name, analysis: d.analysis, vocal, stems: Object.keys(d.buffers) as StemKey[] });
     }
     return list.length === 2 ? [list[0], list[1]] : null;
   };

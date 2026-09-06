@@ -22,6 +22,19 @@ export interface VocalProfile {
   phrases: VocalPhrase[];
   /** short dips inside lines (breaths, quiet syllables), in beats: acceptable places to cut when no line end fits */
   breaths?: number[];
+  /** the beat grid and stem length this profile was measured on; a profile is only valid for that grid */
+  grid?: { firstDownbeat: number; beatInterval: number; totalBars: number; duration: number };
+}
+
+/**
+ * A saved profile is only meaningful on the grid it was measured on. If the grid was re-detected or
+ * nudged since, or the stem is not the same length as the song, its phrases point at the wrong audio
+ * (silence, or the middle of a different line) and it must be recomputed.
+ */
+export function vocalProfileMatches(profile: VocalProfile | null | undefined, a: GridInfo & { duration: number }): profile is VocalProfile {
+  if (!profile?.grid) return false;
+  const g = profile.grid;
+  return Math.abs(g.beatInterval - a.beatInterval) < 1e-4 && Math.abs(g.firstDownbeat - a.firstDownbeat) < 0.002 && g.totalBars === a.totalBars && Math.abs(g.duration - a.duration) < 1.5;
 }
 
 export interface GridInfo {
@@ -153,7 +166,7 @@ export function vocalProfile(mono: Float32Array, sr: number, grid: GridInfo): Vo
 
   // Per-bar chroma of the vocal (melody notes)
   const barChroma = chromaPerBar(mono, sr, grid);
-  return { barVocal, barChroma, phrases, breaths };
+  return { barVocal, barChroma, phrases, breaths, grid: { firstDownbeat: grid.firstDownbeat, beatInterval: grid.beatInterval, totalBars: grid.totalBars, duration: mono.length / sr } };
 }
 
 /** 12 x totalBars pitch-class energy, each bar normalised to sum 1 (zeros when silent). */

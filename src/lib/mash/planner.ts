@@ -145,6 +145,18 @@ export function vocalSegments(song: PlannerSong, bars: number): VocalSegment[] {
     for (let i = 0; i < n; i++) s += vocalEnergyOf(song, b0 + i);
     return n > 0 ? s / n : 0;
   };
+  // Sanity check against the full mix: a sung phrase cannot sit where the song has no sound at all.
+  const audible = (b0: number, n: number) => {
+    let s = 0;
+    let cnt = 0;
+    for (let i = 0; i < n; i++) {
+      const b = b0 + i;
+      if (b < 0 || b >= a.totalBars) continue;
+      s += a.barEnergy[b] ?? 0;
+      cnt++;
+    }
+    return cnt > 0 && s / cnt > 0.03;
+  };
   const phrases = song.vocal?.phrases ?? [];
   if (phrases.length > 0) {
     // Phrase groups: runs of phrases separated by less than a bar of silence. A clip starts at a phrase
@@ -191,6 +203,7 @@ export function vocalSegments(song: PlannerSong, bars: number): VocalSegment[] {
         seen.add(key);
         const energy = meanVocal(anchorBar, best.spanBars);
         if (energy < 0.12) continue;
+        if (!audible(anchorBar, best.spanBars)) continue; // the mix itself is silent here: the profile cannot be right
         const srcStartBeat = anchorBar * 4 - pickupBeats;
         const slotBars = best.spanBars % 2 === 1 ? best.spanBars + 1 : best.spanBars; // parts land on even bars
         // Tail after the last word: up to 0.6 beat of room for the note to ring, but never into the next line.
@@ -215,7 +228,7 @@ export function vocalSegments(song: PlannerSong, bars: number): VocalSegment[] {
   for (let b = 0; b + bars <= a.totalBars; b += 4) {
     if (taken.has(b)) continue;
     const energy = meanVocal(b, bars);
-    if (energy < 0.2) continue;
+    if (energy < 0.2 || !audible(b, bars)) continue;
     let phraseFit = 0.45;
     let audioBeats = bars * 4;
     if (phrases.length > 0) {
