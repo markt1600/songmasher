@@ -252,3 +252,27 @@ export function randomId(): string {
     .map((b) => b.toString(16).padStart(2, "0"))
     .join("");
 }
+
+/**
+ * Reconcile a song's local and cloud records. The newer record wins for ordinary fields, but stems are
+ * a union: a separation done on one device (or saved before a crash) must never be forgotten because
+ * the other side's record was written later without knowing about it.
+ */
+export function mergeSongRecords(local: LibrarySong, remote: LibrarySong): { next: LibrarySong; localNewer: boolean; remoteNewer: boolean } {
+  const remoteNewer = (remote.updatedAt ?? 0) > (local.updatedAt ?? 0);
+  const localNewer = (local.updatedAt ?? 0) > (remote.updatedAt ?? 0);
+  const base: LibrarySong = remoteNewer ? { ...local, ...remote } : { ...remote, ...local };
+  const stemUrls = { ...(remote.stemUrls ?? {}), ...(local.stemUrls ?? {}) };
+  const aiStems = Array.from(new Set([...(remote.aiStems ?? []), ...(local.aiStems ?? [])])) as AiStemKey[];
+  const hasAi = aiStems.length > 0 || Object.keys(stemUrls).length > 0;
+  const next: LibrarySong = {
+    ...base,
+    cloud: true,
+    fileUrl: local.fileUrl ?? remote.fileUrl,
+    stemUrls,
+    aiStems: hasAi ? (aiStems.length ? aiStems : (Object.keys(stemUrls) as AiStemKey[])) : base.aiStems ?? [],
+    stemSource: hasAi ? "ai" : base.stemSource,
+    vocal: base.vocal ?? local.vocal ?? remote.vocal ?? null,
+  };
+  return { next, localNewer, remoteNewer };
+}

@@ -640,12 +640,13 @@ export const useStore = create<Store>((set, get) => {
     void get().refreshLibrary();
     if (!song.analysis.sections) void refreshSections(deckId); // older library records
     // Restore stems in the background
-    if (song.stemSource === "ai" && song.aiStems.length > 0) {
+    const stemKeys = Array.from(new Set([...(song.aiStems ?? []), ...(Object.keys(song.stemUrls ?? {}) as lib.AiStemKey[])]));
+    if ((song.stemSource === "ai" || !!song.stemUrls?.vocals) && stemKeys.length > 0) {
       setDeck(deckId, { stemBusy: true, stemProgress: "Loading saved stems" });
       try {
         const decoded: Partial<Record<lib.AiStemKey, AudioBuffer>> = {};
         await Promise.all(
-          song.aiStems.map(async (k) => {
+          stemKeys.map(async (k) => {
             let blob = await lib.getFile(`${song.id}:${k}`);
             const url = song.stemUrls?.[k];
             if (!blob && url) {
@@ -659,12 +660,16 @@ export const useStore = create<Store>((set, get) => {
           }),
         );
         if (get().decks[deckId].songId !== song.id) return; // deck changed meanwhile
+        if (!decoded.vocals) throw new Error("vocal stem unavailable");
         engine.invalidateDeck(deckId);
         setDeck(deckId, { buffers: buildAiBuffers(buffer, decoded), stemSource: "ai", stemBusy: false, stemProgress: "" });
+        const have = stemKeys.filter((k) => decoded[k]);
+        if (song.stemSource !== "ai" || have.length !== song.aiStems.length) void persistSong(song.id, { stemSource: "ai", aiStems: have });
         if (!get().decks[deckId].vocal || !song.analysis.barChroma) void computeVocalProfile(deckId);
         refreshSuggestions();
-      } catch {
+      } catch (err) {
         setDeck(deckId, { stemBusy: false, stemProgress: "" });
+        get().showToast(`Saved stems for ${song.name} could not be loaded: ${(err as Error).message}`);
       }
     } else if (song.stemSource === "quick") {
       void get().separateQuick(deckId);
@@ -1024,12 +1029,12 @@ export const useStore = create<Store>((set, get) => {
         const r = remoteById.get(l.id);
         if (r) {
           remoteById.delete(l.id);
-          const remoteNewer = (r.updatedAt ?? 0) > (l.updatedAt ?? 0);
-          const next: LibrarySong = remoteNewer
-            ? { ...l, ...r, cloud: true }
-            : { ...l, cloud: true, fileUrl: l.fileUrl ?? r.fileUrl, stemUrls: { ...r.stemUrls, ...l.stemUrls } };
+          const { next, localNewer } = lib.mergeSongRecords(l, r);
           await lib.putSong(next);
-          if (!remoteNewer && (l.updatedAt ?? 0) > (r.updatedAt ?? 0)) scheduleCloudMeta(next);
+          const stemsChanged = (next.aiStems?.length ?? 0) !== (r.aiStems?.length ?? 0) || Object.keys(next.stemUrls ?? {}).length !== Object.keys(r.stemUrls ?? {}).length;
+          if (localNewer || stemsChanged) scheduleCloudMeta(next);
+          // Stems separated here but never uploaded (a closed tab mid-sync): push them now.
+          if (next.aiStems.some((k) => !next.stemUrls?.[k])) void syncSongToCloud(next);
           merged.push(next);
         } else if (l.cloud && !onDeck(l.id) && Date.now() - (l.updatedAt ?? l.addedAt) > 10 * 60_000) {
           // deleted from another device (cloud listings can lag a freshly written record by a while, so
@@ -1773,20 +1778,33 @@ export const useStore = create<Store>((set, get) => {
         setDeck(deckId, { stemProgress: "Saving stems to your library" });
         const stemUrls = (await withCode((c) => cloud.cloudSaveStems(song.id, want, c))) as Partial<Record<lib.AiStemKey, string>> | undefined;
         if (!stemUrls) throw new Error("Could not save stems");
+        // The stems now live in the cloud library: record that first, so a hiccup while downloading or
+        // decoding them never means paying for the separation again.
+        const cloudKeys = Object.keys(stemUrls) as lib.AiStemKey[];
+        await persistSong(song.id, { stemSource: "ai", aiStems: cloudKeys, stemUrls, cloud: true }, true);
         setDeck(deckId, { stemProgress: "Downloading stems" });
         const decoded: Partial<Record<lib.AiStemKey, AudioBuffer>> = {};
-        const stored: lib.AiStemKey[] = [];
+        const failed: string[] = [];
         await Promise.all(
           (Object.entries(stemUrls) as [lib.AiStemKey, string][]).map(async ([k, url]) => {
-            const bytes = await withCode((c) => cloud.cloudFetch(url, c));
-            if (!bytes) throw new Error(`Could not download ${k}`);
-            await lib.putFile(`${song.id}:${k}`, new Blob([bytes], { type: "audio/mpeg" }));
-            stored.push(k);
-            decoded[k] = await decodeArrayBuffer(bytes);
+            try {
+              const bytes = await withCode((c) => cloud.cloudFetch(url, c));
+              if (!bytes) throw new Error("no data");
+              try {
+                await lib.putFile(`${song.id}:${k}`, new Blob([bytes], { type: "audio/mpeg" }));
+              } catch (err) {
+                console.warn(`Could not store the ${k} stem locally; it will stream from the cloud`, err);
+              }
+              decoded[k] = await decodeArrayBuffer(bytes);
+            } catch (err) {
+              failed.push(k);
+              console.warn(`Stem ${k} failed`, err);
+            }
           }),
         );
+        if (!decoded.vocals) throw new Error(`Could not download the vocal stem${failed.length ? ` (${failed.join(", ")} failed)` : ""}. The stems are saved in your library; reload the song to try again.`);
+        if (failed.length) get().showToast(`${failed.join(", ")} did not download; reload the song to fetch ${failed.length > 1 ? "them" : "it"} again`);
         const buffers = buildAiBuffers(full, decoded);
-        await persistSong(song.id, { stemSource: "ai", aiStems: stored, stemUrls, cloud: true }, true);
         engine.invalidateDeck(deckId);
         setDeck(deckId, { buffers, stemSource: "ai", stemBusy: false, stemProgress: "" });
         void computeVocalProfile(deckId);
