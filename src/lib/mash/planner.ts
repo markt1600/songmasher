@@ -47,6 +47,10 @@ export interface PlannedClip {
   mode: "layer" | "swap";
   label: string;
   fit: number; // 0..1 harmonic fit of this clip
+  /** bars the part occupies on the timeline grid (the next part starts after this) */
+  slotBars: number;
+  fadeIn: number; // beats
+  fadeOut: number;
 }
 
 export interface PlanCandidate {
@@ -103,8 +107,11 @@ export function harmonicFit(vocal: Float32Array, found: Float32Array, shift: num
 
 interface VocalSegment {
   srcBar: number; // fractional when there is a pickup
+  /** whole bars occupied on the grid (anchor bar to the bar line after the last phrase) */
   bars: number;
   pickupBeats: number;
+  /** exact audio length in beats from srcBar: runs to the end of the last phrase, not a bar line */
+  audioBeats: number;
   kind: "hook" | "verse";
   energy: number;
   phraseFit: number; // 1 = starts and ends on phrase boundaries
@@ -123,45 +130,63 @@ function vocalSegments(song: PlannerSong, bars: number): VocalSegment[] {
   const kindOf = (bar: number, energy: number): "hook" | "verse" => {
     const sec = sectionOf(bar);
     if (sec?.label === "Chorus") return "hook";
-    if (sec?.label === "Verse" || sec?.label === "Bridge") return "verse";
+    if (sec?.label === "Verse" || sec?.label === "Bridge" || sec?.label === "Pre-chorus") return "verse";
     return energy > 0.6 ? "hook" : "verse";
   };
   const meanVocal = (b0: number, n: number) => {
     let s = 0;
     for (let i = 0; i < n; i++) s += vocalEnergyOf(song, b0 + i);
-    return s / n;
+    return n > 0 ? s / n : 0;
   };
-  if (song.vocal && song.vocal.phrases.length > 0) {
+  const phrases = song.vocal?.phrases ?? [];
+  if (phrases.length > 0) {
+    // Phrase groups: runs of phrases separated by less than a bar of silence. A clip starts at a phrase
+    // start (with its pickup) and ends where a phrase ends, never at an arbitrary bar line.
+    const sorted = [...phrases].sort((x, y) => x.startBeat - y.startBeat);
+    const groups: (typeof sorted)[] = [];
+    for (const ph of sorted) {
+      const g = groups[groups.length - 1];
+      if (g && ph.startBeat - g[g.length - 1].endBeat <= 4) g.push(ph);
+      else groups.push([ph]);
+    }
     const seen = new Set<string>();
-    for (const ph of song.vocal.phrases) {
-      const p = ph.startBeat;
-      const nextBar = Math.ceil(p / 4);
-      const pickup = nextBar * 4 - p;
-      const isPickup = pickup > 0 && pickup <= 1.5;
-      const anchorBar = isPickup ? nextBar : Math.floor(p / 4);
-      const pickupBeats = isPickup ? Math.ceil(pickup * 4) / 4 : 0;
-      if (anchorBar < 0 || anchorBar + bars > a.totalBars) continue;
-      const key = `${anchorBar}:${bars}`;
-      if (seen.has(key)) continue;
-      seen.add(key);
-      const endBeat = (anchorBar + bars) * 4;
-      let cut = 0;
-      let endsClean = 0;
-      for (const q of song.vocal.phrases) {
-        if (q.startBeat < endBeat - 0.5 && q.endBeat > endBeat + 0.5) cut = Math.max(cut, Math.min(1, (q.endBeat - endBeat) / 4));
-        if (Math.abs(q.endBeat - endBeat) <= 1.5) endsClean = 1;
+    for (const g of groups) {
+      for (let i = 0; i < g.length; i++) {
+        const p = g[i].startBeat;
+        const nextBar = Math.ceil(p / 4);
+        const pickup = nextBar * 4 - p;
+        const isPickup = pickup > 0 && pickup <= 1.5;
+        const anchorBar = isPickup ? nextBar : Math.floor(p / 4);
+        const pickupBeats = isPickup ? Math.ceil(pickup * 4) / 4 : 0;
+        if (anchorBar < 0) continue;
+        // Candidate ends: the end of any later phrase in the group; prefer the span closest to the requested length.
+        let best: { endBeat: number; spanBars: number; diff: number } | null = null;
+        for (let j = i; j < g.length; j++) {
+          const endBeat = g[j].endBeat;
+          const spanBars = Math.ceil(endBeat / 4) - anchorBar;
+          if (spanBars < 2 || anchorBar + spanBars > a.totalBars) continue;
+          const diff = Math.abs(spanBars - bars);
+          if (diff <= 2 && (!best || diff < best.diff || (diff === best.diff && spanBars > best.spanBars))) best = { endBeat, spanBars, diff };
+        }
+        if (!best) continue;
+        const key = `${anchorBar}:${best.spanBars}`;
+        if (seen.has(key)) continue;
+        seen.add(key);
+        const energy = meanVocal(anchorBar, best.spanBars);
+        if (energy < 0.12) continue;
+        const srcStartBeat = anchorBar * 4 - pickupBeats;
+        const slotBars = best.spanBars % 2 === 1 ? best.spanBars + 1 : best.spanBars; // parts land on even bars
+        segs.push({
+          srcBar: anchorBar - pickupBeats / 4,
+          bars: slotBars,
+          pickupBeats,
+          audioBeats: best.endBeat - srcStartBeat + 0.25,
+          kind: kindOf(anchorBar, energy),
+          energy,
+          phraseFit: 1 - best.diff * 0.1,
+          label: `${song.name} bars ${anchorBar + 1}–${anchorBar + best.spanBars}`,
+        });
       }
-      const energy = meanVocal(anchorBar, bars);
-      if (energy < 0.12) continue;
-      segs.push({
-        srcBar: anchorBar - pickupBeats / 4,
-        bars,
-        pickupBeats,
-        kind: kindOf(anchorBar, energy),
-        energy,
-        phraseFit: Math.max(0, 1 - cut) * (0.7 + 0.3 * endsClean),
-        label: `${song.name} bars ${anchorBar + 1}–${anchorBar + bars}`,
-      });
     }
   }
   // Grid candidates (every 4 bars) as a fallback with a lower phrase score, so a sparse phrase list never starves the search.
@@ -171,13 +196,20 @@ function vocalSegments(song: PlannerSong, bars: number): VocalSegment[] {
     const energy = meanVocal(b, bars);
     if (energy < 0.2) continue;
     let phraseFit = 0.45;
-    if (song.vocal) {
-      // cutting into a phrase at the start is the worst thing a clip can do
+    let audioBeats = bars * 4;
+    if (phrases.length > 0) {
       const startBeat = b * 4;
-      const cutsIn = song.vocal.phrases.some((q) => q.startBeat < startBeat - 0.5 && q.endBeat > startBeat + 0.5);
-      phraseFit = cutsIn ? 0.15 : 0.5;
+      const endBeat = (b + bars) * 4;
+      const cutsIn = phrases.some((q) => q.startBeat < startBeat - 0.5 && q.endBeat > startBeat + 0.5);
+      const cutsOut = phrases.find((q) => q.startBeat < endBeat - 0.5 && q.endBeat > endBeat + 0.5);
+      phraseFit = cutsIn ? 0.15 : cutsOut ? 0.3 : 0.5;
+      if (cutsOut) {
+        // never end in the middle of a line: stop at the last phrase end inside the window instead
+        const inside = phrases.filter((q) => q.endBeat <= endBeat && q.endBeat > startBeat);
+        if (inside.length) audioBeats = Math.max(4, inside[inside.length - 1].endBeat - startBeat + 0.25);
+      }
     }
-    segs.push({ srcBar: b, bars, pickupBeats: 0, kind: kindOf(b, energy), energy, phraseFit, label: `${song.name} bars ${b + 1}–${b + bars}` });
+    segs.push({ srcBar: b, bars, pickupBeats: 0, audioBeats, kind: kindOf(b, energy), energy, phraseFit, label: `${song.name} bars ${b + 1}–${b + bars}` });
   }
   return segs;
 }
@@ -186,7 +218,7 @@ function vocalSegments(song: PlannerSong, bars: number): VocalSegment[] {
 // Templates
 // ---------------------------------------------------------------------------
 
-function template(id: TemplateId, c: PlanConstraints, availableBars: number): { slots: Slot[]; length: number } {
+function template(id: TemplateId, c: PlanConstraints, availableBars: number): { slots: Slot[]; length: number; hook: number } {
   // Short songs get shorter hooks and a shorter entry so the arrangement still fits.
   const hook = c.hookBars ?? (availableBars < 40 ? 4 : 8);
   const entry = c.vocalEntryBar ?? (id === "vocal-first" ? 0 : availableBars < 40 ? 4 : 8);
@@ -227,7 +259,7 @@ function template(id: TemplateId, c: PlanConstraints, availableBars: number): { 
   }
   let length = c.lengthBars ?? t + 4;
   if (length > availableBars) length = Math.max(8, Math.floor(availableBars / 4) * 4);
-  return { slots: slots.filter((s) => s.startBar + s.bars <= length), length };
+  return { slots: slots.filter((s) => s.startBar + s.bars <= length), length, hook };
 }
 
 // ---------------------------------------------------------------------------
@@ -297,11 +329,11 @@ export function planMashup(songs: [PlannerSong, PlannerSong], constraints: PlanC
   if (fStarts.length === 0) fStarts.push(0);
 
   for (const tid of templates) {
-    const { slots, length } = template(tid, constraints, fa.totalBars);
+    const { slots, length: tplLength, hook } = template(tid, constraints, fa.totalBars);
     if (slots.length === 0) continue;
     for (let shift = -maxShift; shift <= maxShift; shift++) {
       for (const fStart of fStarts) {
-        if (fStart + length > fa.totalBars) continue;
+        if (fStart + Math.min(tplLength, 12) > fa.totalBars) continue;
         const clips: PlannedClip[] = [];
         let harmony = 0;
         let phrases = 0;
@@ -310,25 +342,34 @@ export function planMashup(songs: [PlannerSong, PlannerSong], constraints: PlanC
         let n = 0;
         const used = new Set<number>();
         let ok = true;
+        // Parts are placed one after another; each part's length comes from the phrases it contains,
+        // so the timeline grows or shrinks with the material instead of chopping lines to fit a slot.
+        let cursor = slots[0].startBar;
+        let placed = 0;
         for (const slot of slots) {
+          const slotStart = cursor;
+          if (fStart + slotStart + 2 > fa.totalBars) break;
+          placed++;
           if (slot.kind === "swap") {
-            const all = segsFor(slot.bars);
+            const all = segsFor(hook);
             const cands = all.filter((s) => s.kind === "hook" || s.energy > 0.5);
             const pick = [...(cands.length ? cands : all)].sort((x, y) => y.energy - x.energy)[0];
             if (!pick) {
               ok = false;
               break;
             }
-            clips.push({ deck: V.deck, stem: "full", srcBar: Math.floor(pick.srcBar), lengthBeats: slot.bars * 4, startBeat: slot.startBar * 4, lane: 1, mode: "swap", label: "Drop", fit: 1 });
+            clips.push({ deck: V.deck, stem: "full", srcBar: Math.floor(pick.srcBar), lengthBeats: pick.bars * 4, startBeat: slotStart * 4, lane: 1, mode: "swap", label: "Drop", fit: 1, slotBars: pick.bars, fadeIn: 0, fadeOut: 0.5 });
+            cursor += pick.bars;
             continue;
           }
           let best: { seg: VocalSegment; fit: number; score: number } | null = null;
-          for (const seg of segsFor(slot.bars)) {
+          for (const seg of segsFor(hook)) {
+            if (fStart + slotStart + seg.bars > fa.totalBars) continue;
             let fit = 0;
             let w = 0;
-            for (let i = 0; i < slot.bars; i++) {
+            for (let i = 0; i < seg.bars; i++) {
               const vb = Math.floor(seg.srcBar + seg.pickupBeats / 4 + 1e-6) + i;
-              const fb = fStart + slot.startBar + i;
+              const fb = fStart + slotStart + i;
               const vc = chromaAt(vChroma, vb);
               const fc = chromaAt(fChroma, fb);
               const weight = 0.3 + vocalEnergyOf(V, vb);
@@ -341,7 +382,8 @@ export function planMashup(songs: [PlannerSong, PlannerSong], constraints: PlanC
             const reuse = used.has(seg.srcBar) ? (slot.kind === "hook" ? 0.05 : -0.1) : 0;
             const energyTarget = slot.kind === "hook" ? 0.9 : 0.45;
             const eFit = 1 - Math.min(1, Math.abs(seg.energy - energyTarget) / 0.6);
-            const score = fit * 0.45 + seg.phraseFit * 0.15 + eFit * 0.25 + kindBonus + reuse;
+            // Cutting into a line is the most audible mistake a mashup can make: phrases weigh heavily.
+            const score = fit * 0.4 + seg.phraseFit * 0.3 + eFit * 0.2 + kindBonus + reuse;
             if (!best || score > best.score) best = { seg, fit, score };
           }
           if (!best) {
@@ -357,24 +399,39 @@ export function planMashup(songs: [PlannerSong, PlannerSong], constraints: PlanC
           slotTotal += best.score;
           n++;
           const label = slot.kind === "hook" ? (repeated ? "Hook again" : "Hook") : "Breakdown";
+          // A pickup cannot start before the timeline: trim it when the part sits at bar 0.
+          let startBeat = slotStart * 4 - seg.pickupBeats;
+          let srcBar = seg.srcBar;
+          let lengthBeats = layered ? seg.audioBeats : seg.bars * 4 + seg.pickupBeats;
+          if (startBeat < 0) {
+            srcBar += -startBeat / 4;
+            lengthBeats += startBeat;
+            startBeat = 0;
+          }
           clips.push({
             deck: V.deck,
             stem: layered ? "vocals" : "full",
-            srcBar: seg.srcBar,
-            lengthBeats: slot.bars * 4 + seg.pickupBeats,
-            startBeat: slot.startBar * 4 - seg.pickupBeats,
+            srcBar,
+            lengthBeats,
+            startBeat,
             lane: 1,
             mode: layered ? "layer" : "swap",
             label,
             fit: best.fit,
+            slotBars: seg.bars,
+            fadeIn: seg.pickupBeats > 0 ? 0.1 : 0.05,
+            fadeOut: layered ? 0.5 : 0.25,
           });
+          cursor += seg.bars;
         }
         if (!ok || n === 0) continue;
+        const length = Math.min(fa.totalBars - fStart, Math.max(8, Math.ceil((cursor + 4) / 4) * 4));
         harmony /= n;
         phrases /= n;
         energyFit /= n;
         // Rank candidates by the same blended slot score used to choose their parts, plus global terms.
-        const score = (slotTotal / n) * 0.85 + (1 - stretchPenalty) * 0.1 - Math.abs(shift) * 0.015 + (fStart % 4 === 0 ? 0.02 : 0) + (harmony < 0.45 ? -0.2 : 0);
+        const missing = slots.length - placed;
+        const score = (slotTotal / n) * 0.85 + (1 - stretchPenalty) * 0.1 - Math.abs(shift) * 0.015 + (fStart % 4 === 0 ? 0.02 : 0) + (harmony < 0.45 ? -0.2 : 0) - missing * 0.15;
         results.push({
           id: `${tid}:${fStart}:${shift}`,
           template: tid,

@@ -15,6 +15,8 @@ export interface PlanSegment {
   label: string;
   stem: StemKey;
   mode?: "layer" | "swap";
+  /** exact geometry from the planner (beats); when present, nothing is snapped */
+  exact?: { startBeat: number; lengthBeats: number; fadeIn: number; fadeOut: number };
 }
 
 export interface PlanInput {
@@ -64,6 +66,23 @@ export function sanitizePlan(plan: PlanInput, decks: Record<DeckId, DeckState>):
         mode = "swap";
       }
     }
+    if (seg.exact) {
+      // Planner geometry: pickups before the bar line and clips that end where the singing ends.
+      const srcBar = Math.max(0, Math.min(d.analysis.totalBars - 1, seg.srcBar));
+      clips.push({
+        deckId: seg.deck,
+        stem,
+        srcBar,
+        lengthBeats: Math.max(1, seg.exact.lengthBeats),
+        startBeat: Math.max(0, seg.exact.startBeat),
+        lane: Math.max(1, Math.min(CLIP_LANES, Math.round(seg.lane || 1))),
+        gain: 1,
+        mode,
+        fadeIn: seg.exact.fadeIn,
+        fadeOut: seg.exact.fadeOut,
+      });
+      continue;
+    }
     const lengthBars = Math.max(1, Math.min(64, Math.round(seg.lengthBars)));
     const srcBar = Math.max(0, Math.min(Math.max(0, d.analysis.totalBars - lengthBars), Math.round(seg.srcBar)));
     clips.push({
@@ -88,8 +107,8 @@ export function sanitizePlan(plan: PlanInput, decks: Record<DeckId, DeckState>):
       const p = clips[j];
       if (!vocalish(p)) continue;
       const pEnd = p.startBeat + p.lengthBeats;
-      if (c.startBeat < pEnd && c.startBeat + c.lengthBeats > p.startBeat) {
-        c.startBeat = Math.ceil(pEnd / 16) * 16;
+      if (c.startBeat < pEnd - 1 && c.startBeat + c.lengthBeats > p.startBeat + 1) {
+        c.startBeat = Math.ceil(pEnd / 4) * 4;
         notes.push("Two vocal parts overlapped; one was moved later so they take turns.");
       }
     }

@@ -116,7 +116,7 @@ export interface ClaudePlan {
   foundation: { deck: DeckId; startBar: number; stem: StemKey; reason: string };
   masterBpm: number;
   pitchShift: { deck: DeckId; semitones: number; reason: string } | null;
-  arrangement: { deck: DeckId; srcBar: number; lengthBars: number; startBar: number; lane: number; label: string; stem: StemKey; mode: "layer" | "swap" }[];
+  arrangement: { deck: DeckId; srcBar: number; lengthBars: number; startBar: number; lane: number; label: string; stem: StemKey; mode: "layer" | "swap"; exact?: { startBeat: number; lengthBeats: number; fadeIn: number; fadeOut: number } }[];
   tips: string[];
   /** which songs would benefit from (better) stems, and which Demucs variant to use */
   stemAdvice?: { deck: DeckId; variant: DemucsVariant; reason: string }[];
@@ -730,7 +730,17 @@ export const useStore = create<Store>((set, get) => {
     foundation: { deck: c.foundation.deck, startBar: c.foundation.startBar, stem: c.foundation.stem, reason: "" },
     masterBpm: c.masterBpm,
     pitchShift: c.semitones ? { deck: c.vocalDeck, semitones: c.semitones, reason: "" } : null,
-    arrangement: c.clips.map((k, i) => ({ deck: k.deck, srcBar: k.srcBar, lengthBars: k.lengthBeats / 4, startBar: k.startBeat / 4, lane: k.lane, label: labels?.[i] ?? k.label, stem: k.stem, mode: k.mode })),
+    arrangement: c.clips.map((k, i) => ({
+      deck: k.deck,
+      srcBar: k.srcBar,
+      lengthBars: k.slotBars,
+      startBar: k.startBeat / 4,
+      lane: k.lane,
+      label: labels?.[i] ?? k.label,
+      stem: k.stem,
+      mode: k.mode,
+      exact: { startBeat: k.startBeat, lengthBeats: k.lengthBeats, fadeIn: k.fadeIn, fadeOut: k.fadeOut },
+    })),
     tips: [],
   });
 
@@ -771,7 +781,7 @@ export const useStore = create<Store>((set, get) => {
       semitones: c.semitones,
       masterBpm: c.masterBpm,
       lengthBars: c.lengthBars,
-      clips: c.clips.map((k) => ({ label: k.label, deck: k.deck, srcBar: Math.round(k.srcBar * 4) / 4, lengthBars: Math.round(k.lengthBeats) / 4, startBar: Math.round(k.startBeat) / 4, stem: k.stem, mode: k.mode, fit: r2(k.fit) })),
+      clips: c.clips.map((k) => ({ label: k.label, deck: k.deck, srcBar: Math.round(k.srcBar * 4) / 4, lengthBars: k.slotBars, startBar: Math.round(k.startBeat) / 4, stem: k.stem, mode: k.mode, fit: r2(k.fit) })),
     }));
   const r2 = (v: number) => Math.round(v * 100) / 100;
 

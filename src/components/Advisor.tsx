@@ -145,8 +145,9 @@ export default function Advisor() {
                     <td className="pr-3 py-1" style={{ color: DECK_COLORS[k.deck].main }}>
                       {k.deck} · {claudeNotes?.choice === selected.id && claudeNotes.clipLabels[i] ? claudeNotes.clipLabels[i] : k.label}
                     </td>
-                    <td className="pr-3 py-1 font-mono">
-                      {Math.floor(k.srcBar) + 1}–{Math.floor(k.srcBar) + Math.ceil(k.lengthBeats / 4)}
+                    <td className="pr-3 py-1 font-mono" title={`${(k.lengthBeats / 4).toFixed(2)} bars of audio: the clip ends where the singing ends`}>
+                      {Math.floor(k.srcBar + (k.startBeat % 4 !== 0 ? 1 : 0)) + 1}–{Math.floor(k.srcBar + (k.startBeat % 4 !== 0 ? 1 : 0)) + k.slotBars}
+                      {k.mode === "layer" && Math.abs(k.lengthBeats - k.slotBars * 4) > 0.3 ? <span className="text-muted"> · to phrase end</span> : null}
                     </td>
                     <td className="pr-3 py-1">{k.stem}</td>
                     <td className="pr-3 py-1">{k.mode === "swap" ? "swaps beat" : "layers"}</td>
