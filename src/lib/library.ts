@@ -34,6 +34,8 @@ export interface LibrarySong {
   fileUrl?: string;
   /** cloud copies of the AI stems */
   stemUrls?: Partial<Record<AiStemKey, string>>;
+  /** a Demucs job started but not yet collected: any device can pick it up */
+  pendingStems?: { id: string; variant: string; startedAt: number } | null;
   /** true when this record came from (or is synced to) the cloud library */
   cloud?: boolean;
   /** derived from the Demucs vocal stem: phrases, per-bar vocal energy, melody chroma */
@@ -273,6 +275,7 @@ export function mergeSongRecords(local: LibrarySong, remote: LibrarySong): { nex
     aiStems: hasAi ? (aiStems.length ? aiStems : (Object.keys(stemUrls) as AiStemKey[])) : base.aiStems ?? [],
     stemSource: hasAi ? "ai" : base.stemSource,
     vocal: base.vocal ?? local.vocal ?? remote.vocal ?? null,
+    pendingStems: hasAi ? null : (local.pendingStems ?? remote.pendingStems ?? null),
   };
   return { next, localNewer, remoteNewer };
 }

@@ -440,6 +440,98 @@ export const useStore = create<Store>((set, get) => {
     return song;
   };
 
+  // ---- Stem separation (Demucs on Replicate) --------------------------------
+
+  /** Polls a Demucs job until it succeeds; throws on failure or after 30 minutes. */
+  const pollSeparation = async (deckId: DeckId, predictionId: string): Promise<Record<string, string>> => {
+    const code = get().accessCode;
+    const started = Date.now();
+    while (Date.now() - started < 30 * 60 * 1000) {
+      const st = await fetch(`/api/stems?id=${encodeURIComponent(predictionId)}`, { headers: { "x-access-code": code } });
+      if (!st.ok) throw new Error((await st.json()).error ?? "Status check failed");
+      const j = (await st.json()) as { status: string; output?: Record<string, string>; error?: string; logs?: string };
+      setDeck(deckId, { stemProgress: `Demucs: ${j.status}${j.logs ? ` · ${j.logs}` : ""}` });
+      if (j.status === "succeeded") return j.output ?? {};
+      if (j.status === "failed" || j.status === "canceled") throw new Error(j.error ?? "Separation failed");
+      await new Promise((r) => setTimeout(r, 3000));
+    }
+    throw new Error("Separation timed out; it may still finish in the cloud, so try again later to collect it");
+  };
+
+  /** Saves a finished job's stems to the cloud and this device, and loads them into the deck. */
+  const finishSeparation = async (deckId: DeckId, song: LibrarySong, output: Record<string, string>) => {
+    const d = get().decks[deckId];
+    const full = d.buffers.full;
+    if (!full || d.songId !== song.id) return;
+    const want: Record<string, string> = {};
+    for (const k of lib.AI_STEM_KEYS) if (output[k]) want[k] = output[k];
+    if (!want.vocals) throw new Error("No vocal stem returned");
+    setDeck(deckId, { stemProgress: "Saving stems to your library" });
+    const stemUrls = (await withCode((c) => cloud.cloudSaveStems(song.id, want, c))) as Partial<Record<lib.AiStemKey, string>> | undefined;
+    if (!stemUrls) throw new Error("Could not save stems");
+    // The stems now live in the cloud library: record that first, so a hiccup while downloading or
+    // decoding them never means paying for the separation again.
+    const cloudKeys = Object.keys(stemUrls) as lib.AiStemKey[];
+    await persistSong(song.id, { stemSource: "ai", aiStems: cloudKeys, stemUrls, pendingStems: null, cloud: true }, true);
+    setDeck(deckId, { stemProgress: "Downloading stems" });
+    const decoded: Partial<Record<lib.AiStemKey, AudioBuffer>> = {};
+    const failed: string[] = [];
+    await Promise.all(
+      (Object.entries(stemUrls) as [lib.AiStemKey, string][]).map(async ([k, url]) => {
+        try {
+          const bytes = await withCode((c) => cloud.cloudFetch(url, c));
+          if (!bytes) throw new Error("no data");
+          try {
+            await lib.putFile(`${song.id}:${k}`, new Blob([bytes], { type: "audio/mpeg" }));
+          } catch (err) {
+            console.warn(`Could not store the ${k} stem locally; it will stream from the cloud`, err);
+          }
+          decoded[k] = await decodeArrayBuffer(bytes);
+        } catch (err) {
+          failed.push(k);
+          console.warn(`Stem ${k} failed`, err);
+        }
+      }),
+    );
+    if (!decoded.vocals) throw new Error(`Could not download the vocal stem${failed.length ? ` (${failed.join(", ")} failed)` : ""}. The stems are saved in your library; reload the song to try again.`);
+    if (failed.length) get().showToast(`${failed.join(", ")} did not download; reload the song to fetch ${failed.length > 1 ? "them" : "it"} again`);
+    const buffers = buildAiBuffers(full, decoded);
+    engine.invalidateDeck(deckId);
+    setDeck(deckId, { buffers, stemSource: "ai", stemBusy: false, stemProgress: "" });
+    void computeVocalProfile(deckId);
+    get().showToast(`AI stems ready for ${d.name}`);
+    void restartIfPlaying();
+  };
+
+  /** Collects a job that was started earlier: by a closed tab, another device, or a timed-out wait. */
+  const resumeSeparation = async (deckId: DeckId, song: LibrarySong) => {
+    const pending = song.pendingStems;
+    if (!pending) return;
+    const minutes = Math.max(1, Math.round((Date.now() - pending.startedAt) / 60_000));
+    setDeck(deckId, { stemBusy: true, stemProgress: `Collecting the separation started ${minutes} min ago` });
+    try {
+      // The cloud may already hold the finished stems (the completion callback saves them): look there first.
+      const fresh = get().config.cloud ? await withCode((code) => cloud.cloudList(code)).catch(() => undefined) : undefined;
+      const remote = fresh?.songs.find((x) => x.id === song.id);
+      if (remote?.stemUrls?.vocals) {
+        const merged = lib.mergeSongRecords((await lib.getSong(song.id)) ?? song, remote).next;
+        await lib.putSong(merged);
+        set((s) => ({ library: s.library.map((x) => (x.id === merged.id ? merged : x)) }));
+        setDeck(deckId, { stemBusy: false, stemProgress: "" });
+        await loadStemsIntoDeck(deckId, merged);
+        return;
+      }
+      const output = await pollSeparation(deckId, pending.id);
+      await finishSeparation(deckId, song, output);
+    } catch (err) {
+      const msg = (err as Error).message;
+      setDeck(deckId, { stemBusy: false, stemProgress: "" });
+      // A job Replicate no longer knows about, or one that failed, is not worth waiting for again.
+      if (/not found|404|failed|canceled/i.test(msg)) await persistSong(song.id, { pendingStems: null });
+      get().showToast(`AI stems: ${msg}`);
+    }
+  };
+
   // ---- Cloud sync helpers -------------------------------------------------
 
   /** Resolves the access code, prompting once if the server requires one. Returns undefined if the user cancels. */
@@ -639,40 +731,51 @@ export const useStore = create<Store>((set, get) => {
     refreshSuggestions();
     void get().refreshLibrary();
     if (!song.analysis.sections) void refreshSections(deckId); // older library records
-    // Restore stems in the background
+    // Restore stems in the background, or collect a separation that is still running in the cloud
     const stemKeys = Array.from(new Set([...(song.aiStems ?? []), ...(Object.keys(song.stemUrls ?? {}) as lib.AiStemKey[])]));
     if ((song.stemSource === "ai" || !!song.stemUrls?.vocals) && stemKeys.length > 0) {
-      setDeck(deckId, { stemBusy: true, stemProgress: "Loading saved stems" });
-      try {
-        const decoded: Partial<Record<lib.AiStemKey, AudioBuffer>> = {};
-        await Promise.all(
-          stemKeys.map(async (k) => {
-            let blob = await lib.getFile(`${song.id}:${k}`);
-            const url = song.stemUrls?.[k];
-            if (!blob && url) {
-              const bytes = await withCode((code) => cloud.cloudFetch(url, code));
-              if (bytes) {
-                blob = new Blob([bytes], { type: "audio/mpeg" });
-                await lib.putFile(`${song.id}:${k}`, blob);
-              }
-            }
-            if (blob) decoded[k] = await decodeArrayBuffer(await blob.arrayBuffer());
-          }),
-        );
-        if (get().decks[deckId].songId !== song.id) return; // deck changed meanwhile
-        if (!decoded.vocals) throw new Error("vocal stem unavailable");
-        engine.invalidateDeck(deckId);
-        setDeck(deckId, { buffers: buildAiBuffers(buffer, decoded), stemSource: "ai", stemBusy: false, stemProgress: "" });
-        const have = stemKeys.filter((k) => decoded[k]);
-        if (song.stemSource !== "ai" || have.length !== song.aiStems.length) void persistSong(song.id, { stemSource: "ai", aiStems: have });
-        if (!get().decks[deckId].vocal || !song.analysis.barChroma) void computeVocalProfile(deckId);
-        refreshSuggestions();
-      } catch (err) {
-        setDeck(deckId, { stemBusy: false, stemProgress: "" });
-        get().showToast(`Saved stems for ${song.name} could not be loaded: ${(err as Error).message}`);
-      }
+      await loadStemsIntoDeck(deckId, song);
+    } else if (song.pendingStems && Date.now() - song.pendingStems.startedAt < 2 * 60 * 60_000) {
+      void resumeSeparation(deckId, song);
     } else if (song.stemSource === "quick") {
       void get().separateQuick(deckId);
+    }
+  };
+
+  /** Loads a song's saved AI stems (local files first, then the cloud) into the deck that holds it. */
+  const loadStemsIntoDeck = async (deckId: DeckId, song: LibrarySong) => {
+    const buffer = get().decks[deckId].buffers.full;
+    if (!buffer || get().decks[deckId].songId !== song.id) return;
+    const stemKeys = Array.from(new Set([...(song.aiStems ?? []), ...(Object.keys(song.stemUrls ?? {}) as lib.AiStemKey[])]));
+    if (stemKeys.length === 0) return;
+    setDeck(deckId, { stemBusy: true, stemProgress: "Loading saved stems" });
+    try {
+      const decoded: Partial<Record<lib.AiStemKey, AudioBuffer>> = {};
+      await Promise.all(
+        stemKeys.map(async (k) => {
+          let blob = await lib.getFile(`${song.id}:${k}`);
+          const url = song.stemUrls?.[k];
+          if (!blob && url) {
+            const bytes = await withCode((code) => cloud.cloudFetch(url, code));
+            if (bytes) {
+              blob = new Blob([bytes], { type: "audio/mpeg" });
+              await lib.putFile(`${song.id}:${k}`, blob);
+            }
+          }
+          if (blob) decoded[k] = await decodeArrayBuffer(await blob.arrayBuffer());
+        }),
+      );
+      if (get().decks[deckId].songId !== song.id) return; // deck changed meanwhile
+      if (!decoded.vocals) throw new Error("vocal stem unavailable");
+      engine.invalidateDeck(deckId);
+      setDeck(deckId, { buffers: buildAiBuffers(buffer, decoded), stemSource: "ai", stemBusy: false, stemProgress: "" });
+      const have = stemKeys.filter((k) => decoded[k]);
+      if (song.stemSource !== "ai" || have.length !== song.aiStems.length || song.pendingStems) void persistSong(song.id, { stemSource: "ai", aiStems: have, pendingStems: null });
+      if (!get().decks[deckId].vocal || !song.analysis.barChroma) void computeVocalProfile(deckId);
+      refreshSuggestions();
+    } catch (err) {
+      setDeck(deckId, { stemBusy: false, stemProgress: "" });
+      get().showToast(`Saved stems for ${song.name} could not be loaded: ${(err as Error).message}`);
     }
   };
 
@@ -1744,6 +1847,11 @@ export const useStore = create<Store>((set, get) => {
         get().showToast("This song is no longer in the library and its file is gone. Add it again from the file to separate stems.");
         return;
       }
+      // A job started earlier (here or on another device) that was never collected: pick it up instead of paying again.
+      if (song.pendingStems && Date.now() - song.pendingStems.startedAt < 2 * 60 * 60_000) {
+        await resumeSeparation(deckId, song);
+        return;
+      }
       setDeck(deckId, { stemBusy: true, stemProgress: "Uploading song" });
       try {
         const audioUrl = await ensureCloudFile(song);
@@ -1753,63 +1861,14 @@ export const useStore = create<Store>((set, get) => {
         const startRes = await fetch("/api/stems", {
           method: "POST",
           headers: { "content-type": "application/json", "x-access-code": code },
-          body: JSON.stringify({ audioUrl, variant }),
+          body: JSON.stringify({ audioUrl, variant, songId: song.id }),
         });
         if (!startRes.ok) throw new Error((await startRes.json()).error ?? "Could not start separation");
-        const { id } = await startRes.json();
-        let output: Record<string, string> | null = null;
-        const started = Date.now();
-        while (Date.now() - started < 15 * 60 * 1000) {
-          await new Promise((r) => setTimeout(r, 3000));
-          const st = await fetch(`/api/stems?id=${encodeURIComponent(id)}`, { headers: { "x-access-code": code } });
-          if (!st.ok) throw new Error((await st.json()).error ?? "Status check failed");
-          const j = await st.json();
-          setDeck(deckId, { stemProgress: `Demucs: ${j.status}${j.logs ? ` · ${j.logs}` : ""}` });
-          if (j.status === "succeeded") {
-            output = j.output;
-            break;
-          }
-          if (j.status === "failed" || j.status === "canceled") throw new Error(j.error ?? "Separation failed");
-        }
-        if (!output) throw new Error("Separation timed out");
-        const want: Record<string, string> = {};
-        for (const k of lib.AI_STEM_KEYS) if (output[k]) want[k] = output[k];
-        if (!want.vocals) throw new Error("No vocal stem returned");
-        setDeck(deckId, { stemProgress: "Saving stems to your library" });
-        const stemUrls = (await withCode((c) => cloud.cloudSaveStems(song.id, want, c))) as Partial<Record<lib.AiStemKey, string>> | undefined;
-        if (!stemUrls) throw new Error("Could not save stems");
-        // The stems now live in the cloud library: record that first, so a hiccup while downloading or
-        // decoding them never means paying for the separation again.
-        const cloudKeys = Object.keys(stemUrls) as lib.AiStemKey[];
-        await persistSong(song.id, { stemSource: "ai", aiStems: cloudKeys, stemUrls, cloud: true }, true);
-        setDeck(deckId, { stemProgress: "Downloading stems" });
-        const decoded: Partial<Record<lib.AiStemKey, AudioBuffer>> = {};
-        const failed: string[] = [];
-        await Promise.all(
-          (Object.entries(stemUrls) as [lib.AiStemKey, string][]).map(async ([k, url]) => {
-            try {
-              const bytes = await withCode((c) => cloud.cloudFetch(url, c));
-              if (!bytes) throw new Error("no data");
-              try {
-                await lib.putFile(`${song.id}:${k}`, new Blob([bytes], { type: "audio/mpeg" }));
-              } catch (err) {
-                console.warn(`Could not store the ${k} stem locally; it will stream from the cloud`, err);
-              }
-              decoded[k] = await decodeArrayBuffer(bytes);
-            } catch (err) {
-              failed.push(k);
-              console.warn(`Stem ${k} failed`, err);
-            }
-          }),
-        );
-        if (!decoded.vocals) throw new Error(`Could not download the vocal stem${failed.length ? ` (${failed.join(", ")} failed)` : ""}. The stems are saved in your library; reload the song to try again.`);
-        if (failed.length) get().showToast(`${failed.join(", ")} did not download; reload the song to fetch ${failed.length > 1 ? "them" : "it"} again`);
-        const buffers = buildAiBuffers(full, decoded);
-        engine.invalidateDeck(deckId);
-        setDeck(deckId, { buffers, stemSource: "ai", stemBusy: false, stemProgress: "" });
-        void computeVocalProfile(deckId);
-        get().showToast(`AI stems ready for ${d.name}`);
-        void restartIfPlaying();
+        const { id } = (await startRes.json()) as { id: string };
+        // Remember the job on the song itself (locally and in the cloud) so a closed tab or another device can finish it.
+        await persistSong(song.id, { pendingStems: { id, variant, startedAt: Date.now() } }, true);
+        const output = await pollSeparation(deckId, id);
+        await finishSeparation(deckId, song, output);
       } catch (err) {
         setDeck(deckId, { stemBusy: false, stemProgress: "" });
         get().showToast(`AI stems failed: ${(err as Error).message}`);

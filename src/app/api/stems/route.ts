@@ -1,5 +1,6 @@
 import Replicate from "replicate";
-import { authorized, unauthorized } from "@/lib/server/access";
+import { authorized, cloudEnabled, unauthorized } from "@/lib/server/access";
+import { SONG_ID_RE, webhookToken } from "@/lib/server/stems";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -40,13 +41,15 @@ export async function POST(request: Request): Promise<Response> {
   const replicate = client();
   if (!replicate) return Response.json({ error: "REPLICATE_API_TOKEN is not set" }, { status: 501 });
   let audioUrl: string;
+  let songId = "";
   let variant = process.env.DEMUCS_MODEL_VARIANT ?? "htdemucs";
   try {
-    const body = (await request.json()) as { audioUrl?: string; variant?: string };
+    const body = (await request.json()) as { audioUrl?: string; variant?: string; songId?: string };
     audioUrl = String(body.audioUrl ?? "");
     const u = new URL(audioUrl);
     if (u.protocol !== "https:") throw new Error("bad protocol");
     if (body.variant && VARIANTS.includes(body.variant as Variant)) variant = body.variant;
+    if (typeof body.songId === "string" && SONG_ID_RE.test(body.songId)) songId = body.songId;
   } catch {
     return Response.json({ error: "audioUrl must be an https URL" }, { status: 400 });
   }
@@ -57,10 +60,15 @@ export async function POST(request: Request): Promise<Response> {
     output_format: "mp3",
     mp3_bitrate: 320,
   };
+  // When the deployment is reachable from the internet, have Replicate call back on completion so the
+  // stems are saved even if the browser that started the job is gone (fine-tuned runs take a while).
+  const origin = new URL(request.url).origin;
+  const token = songId ? webhookToken(songId) : null;
+  const webhook = songId && token && cloudEnabled() && /^https:\/\//.test(origin) && !/localhost|127\.0\.0\.1/.test(origin) ? `${origin}/api/stems/webhook?song=${encodeURIComponent(songId)}&t=${token}` : undefined;
   try {
     const version = await resolveVersion(replicate);
-    const prediction = await replicate.predictions.create({ version, input });
-    return Response.json({ id: prediction.id, status: prediction.status });
+    const prediction = await replicate.predictions.create({ version, input, ...(webhook ? { webhook, webhook_events_filter: ["completed"] } : {}) });
+    return Response.json({ id: prediction.id, status: prediction.status, webhook: !!webhook });
   } catch (err) {
     return Response.json({ error: `Replicate: ${(err as Error).message}` }, { status: 502 });
   }

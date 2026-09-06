@@ -1,23 +1,11 @@
-import { put } from "@vercel/blob";
 import { authorized, cloudEnabled, unauthorized } from "@/lib/server/access";
+import { copyStemsToLibrary, recordStemsInMeta, SONG_ID_RE } from "@/lib/server/stems";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 export const maxDuration = 60;
 
-const KEYS = ["vocals", "drums", "bass", "other"] as const;
-type Key = (typeof KEYS)[number];
-
-function allowedSource(u: string): boolean {
-  try {
-    const url = new URL(u);
-    return url.protocol === "https:" && (url.hostname === "replicate.delivery" || url.hostname.endsWith(".replicate.delivery") || url.hostname.endsWith(".replicate.com"));
-  } catch {
-    return false;
-  }
-}
-
-/** Copies finished Demucs stems from Replicate into the song's library folder. */
+/** Copies finished Demucs stems from Replicate into the song's library folder and records them on the song. */
 export async function POST(request: Request): Promise<Response> {
   if (!cloudEnabled()) return Response.json({ error: "Cloud library is not configured" }, { status: 501 });
   if (!authorized(request.headers.get("x-access-code"))) return unauthorized();
@@ -28,31 +16,15 @@ export async function POST(request: Request): Promise<Response> {
     return Response.json({ error: "Invalid JSON" }, { status: 400 });
   }
   const id = body.id ?? "";
-  if (!/^[\w.-]{1,120}$/.test(id)) return Response.json({ error: "Invalid song id" }, { status: 400 });
-  const entries: [Key, string][] = [];
-  for (const k of KEYS) {
-    const u = body.urls?.[k];
-    if (typeof u === "string" && allowedSource(u)) entries.push([k, u]);
-  }
-  if (entries.length === 0) return Response.json({ error: "No stem urls" }, { status: 400 });
+  if (!SONG_ID_RE.test(id)) return Response.json({ error: "Invalid song id" }, { status: 400 });
   try {
-    const stems: Record<string, string> = {};
-    await Promise.all(
-      entries.map(async ([k, url]) => {
-        const ext = /\.(wav|flac|mp3)(\?|$)/i.exec(url)?.[1]?.toLowerCase() ?? "mp3";
-        const src = await fetch(url);
-        if (!src.ok || !src.body) throw new Error(`Could not fetch ${k} from Replicate (${src.status})`);
-        const res = await put(`library/${id}/stems/${k}.${ext}`, src.body, {
-          access: "public",
-          addRandomSuffix: false,
-          allowOverwrite: true,
-          contentType: src.headers.get("content-type") ?? "audio/mpeg",
-        });
-        stems[k] = res.url;
-      }),
-    );
+    const stems = await copyStemsToLibrary(id, body.urls ?? {});
+    // Best effort: the client writes its own record next, but noting the stems here means even a client
+    // that dies right now leaves the cloud record complete.
+    await recordStemsInMeta(id, stems).catch(() => false);
     return Response.json({ stems });
   } catch (err) {
-    return Response.json({ error: `Blob: ${(err as Error).message}` }, { status: 502 });
+    const msg = (err as Error).message;
+    return Response.json({ error: msg === "No stem urls" ? msg : `Blob: ${msg}` }, { status: msg === "No stem urls" ? 400 : 502 });
   }
 }
