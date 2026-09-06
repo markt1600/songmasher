@@ -1,5 +1,5 @@
 "use client";
-import { useRef, useState } from "react";
+import { useMemo, useRef, useState } from "react";
 import { useStore } from "@/lib/store";
 import { formatBytes, type LibraryMix, type LibraryProject, type LibrarySong } from "@/lib/library";
 import { DECK_COLORS, type DeckId } from "@/lib/types";
@@ -10,6 +10,24 @@ function fmtDuration(sec: number): string {
   const m = Math.floor(sec / 60);
   const s = Math.floor(sec % 60);
   return `${m}:${s.toString().padStart(2, "0")}`;
+}
+
+type SongSort = "recent" | "name" | "bpm";
+/** Songs shown before "Show all": about two rows on a wide screen. */
+const SONG_LIMIT = 12;
+function readPref(key: string, fallback: string): string {
+  try {
+    return window.localStorage.getItem(`songmasher:${key}`) ?? fallback;
+  } catch {
+    return fallback;
+  }
+}
+function writePref(key: string, value: string) {
+  try {
+    window.localStorage.setItem(`songmasher:${key}`, value);
+  } catch {
+    /* private mode */
+  }
 }
 
 export default function Library() {
@@ -28,6 +46,24 @@ export default function Library() {
   const fileRef = useRef<HTMLInputElement>(null);
   const [drag, setDrag] = useState(false);
   const [confirmId, setConfirmId] = useState<string | null>(null);
+  const [query, setQuery] = useState("");
+  // The studio renders client-only, so view preferences can be read straight from localStorage.
+  const [sort, setSort] = useState<SongSort>(() => {
+    const v = readPref("songSort", "recent");
+    return v === "name" || v === "bpm" ? v : "recent";
+  });
+  const [showAll, setShowAll] = useState(() => readPref("songShowAll", "0") === "1");
+
+  const songs = useMemo(() => {
+    const q = query.trim().toLowerCase();
+    const list = q ? library.filter((x) => x.name.toLowerCase().includes(q) || x.keyName.toLowerCase().includes(q) || x.camelot.toLowerCase() === q) : [...library];
+    if (sort === "name") list.sort((a, b) => a.name.localeCompare(b.name, undefined, { numeric: true, sensitivity: "base" }));
+    else if (sort === "bpm") list.sort((a, b) => a.bpm - b.bpm);
+    else list.sort((a, b) => b.addedAt - a.addedAt);
+    return list;
+  }, [library, query, sort]);
+  const capped = !showAll && !query.trim() && songs.length > SONG_LIMIT;
+  const visible = capped ? songs.slice(0, SONG_LIMIT) : songs;
 
   const loadedOn = (id: string): DeckId | null => {
     if (decks.A.songId === id && decks.A.status !== "empty") return "A";
@@ -70,6 +106,39 @@ export default function Library() {
           </span>
         )}
         <div className="flex-1" />
+        {library.length > 6 && (
+          <>
+            <div className="relative hidden sm:block">
+              <input
+                className="h-[28px] w-[170px] rounded-[8px] border border-white/[0.12] bg-black/30 pl-2.5 pr-6 text-[12px] outline-none focus:border-[#7c6cff] placeholder:text-muted/70"
+                placeholder="Filter songs…"
+                value={query}
+                onChange={(e) => setQuery(e.target.value)}
+                aria-label="Filter songs"
+              />
+              {query && (
+                <button className="absolute right-1.5 top-1/2 -translate-y-1/2 text-muted hover:text-text" onClick={() => setQuery("")} title="Clear filter">
+                  <Icon name="x" size={10} />
+                </button>
+              )}
+            </div>
+            <div className="seg hidden md:inline-flex" title="Sort songs">
+              {(["recent", "name", "bpm"] as SongSort[]).map((k) => (
+                <button
+                  key={k}
+                  data-active={sort === k}
+                  style={{ height: 22, fontSize: 11.5, padding: "0 8px" }}
+                  onClick={() => {
+                    setSort(k);
+                    writePref("songSort", k);
+                  }}
+                >
+                  {k === "recent" ? "Recent" : k === "name" ? "Name" : "BPM"}
+                </button>
+              ))}
+            </div>
+          </>
+        )}
         {(busy || syncing) && (
           <span className="text-[11.5px] text-text-2 pulse flex items-center gap-2 mr-1 truncate max-w-[320px]">
             <span className="h-3 w-3 rounded-full border-2 border-white/20 border-t-white animate-spin shrink-0" />
@@ -99,8 +168,8 @@ export default function Library() {
           <span className="text-text font-medium">Drop songs here</span> or click Add song. Each one is analysed once and reloads instantly next time.
         </button>
       ) : (
-        <div className="flex gap-2.5 overflow-x-auto pb-1 -mx-1 px-1" style={{ scrollbarGutter: "stable" }}>
-          {library.map((song) => (
+        <div className="grid gap-2" style={{ gridTemplateColumns: "repeat(auto-fill, minmax(196px, 1fr))" }}>
+          {visible.map((song) => (
             <SongCard
               key={song.id}
               song={song}
@@ -119,7 +188,19 @@ export default function Library() {
               }}
             />
           ))}
+          {visible.length === 0 && <div className="text-[12px] text-muted py-3 col-span-full">No songs match “{query}”.</div>}
         </div>
+      )}
+      {(capped || (showAll && songs.length > SONG_LIMIT)) && (
+        <button
+          className="self-center text-[11.5px] text-text-2 hover:text-text -mt-1"
+          onClick={() => {
+            setShowAll(!showAll);
+            writePref("songShowAll", showAll ? "0" : "1");
+          }}
+        >
+          {capped ? `Show all ${songs.length} songs` : "Show fewer"}
+        </button>
       )}
 
       {projects.length > 0 && (
@@ -261,55 +342,47 @@ function MixCard({ m, link, onPlay, onShare, onDelete }: { m: LibraryMix; link: 
 function SongCard({ song, cloud, loadedOn, confirming, onLoad, onDelete }: { song: LibrarySong; cloud: boolean; loadedOn: DeckId | null; confirming: boolean; onLoad: (deck: DeckId) => void; onDelete: () => void }) {
   const ring = loadedOn ? DECK_COLORS[loadedOn].main : undefined;
   const synced = !!song.fileUrl;
+  const ai = song.stemSource === "ai" && song.aiStems.length > 0;
   return (
     <div
-      className="relative shrink-0 w-[268px] rounded-[12px] inset p-3 flex flex-col gap-2 transition-[border-color,box-shadow] duration-150 fade-in cursor-grab active:cursor-grabbing"
+      className="relative min-w-0 rounded-[10px] inset px-2.5 py-2 flex flex-col gap-1.5 transition-[border-color,box-shadow] duration-150 fade-in cursor-grab active:cursor-grabbing"
       style={ring ? { borderColor: `${ring}88`, boxShadow: `0 0 0 1px ${ring}33` } : undefined}
-      title="Drag onto a deck to load it"
+      title={`${song.name}\nDrag onto a deck to load it`}
       onPointerDown={(e) => {
         if ((e.target as HTMLElement).closest("button")) return;
         beginDragOnMove(e, { kind: "song", id: song.id, name: song.name });
       }}
     >
-      <div className="flex items-start gap-2">
-        <div className="min-w-0 flex-1">
-          <div className="text-[13px] font-semibold truncate tracking-[-0.01em]" title={song.name}>
-            {song.name}
-          </div>
-          <div className="text-[11px] text-muted mt-0.5 font-mono tabular-nums truncate whitespace-nowrap">
-            {song.bpm.toFixed(1)} BPM · {song.keyName} {song.camelot} · {fmtDuration(song.duration)}
-          </div>
-        </div>
+      <div className="flex items-center gap-1.5 min-w-0">
         {loadedOn && (
-          <span className="text-[10px] font-bold h-5 w-5 rounded-[6px] grid place-items-center text-black shrink-0" style={{ background: ring }}>
+          <span className="text-[9.5px] font-bold h-4 w-4 rounded-[5px] grid place-items-center text-black shrink-0" style={{ background: ring }}>
             {loadedOn}
           </span>
         )}
-      </div>
-      <div className="flex items-center gap-1.5">
-        {song.stemSource === "ai" && song.aiStems.length > 0 ? (
-          <span className="chip" style={{ color: "var(--accent-2)", borderColor: "rgba(124,108,255,0.4)" }} title="Demucs stems are saved with this song">
-            <Icon name="sparkles" size={10} /> AI stems
+        <div className="text-[12.5px] font-semibold truncate tracking-[-0.01em] flex-1 min-w-0">{song.name}</div>
+        {ai && (
+          <span className="shrink-0" style={{ color: "var(--accent-2)" }} title="Demucs stems are saved with this song">
+            <Icon name="sparkles" size={10} />
           </span>
-        ) : song.stemSource === "quick" ? (
-          <span className="chip">Quick stems</span>
-        ) : (
-          <span className="chip">{formatBytes(song.size)}</span>
         )}
         {cloud && (
-          <span className="text-muted" title={synced ? "Stored in your cloud library" : "Uploading to your cloud library"} style={{ opacity: synced ? 0.8 : 0.35 }}>
-            <Icon name="cloud" size={12} />
+          <span className="text-muted shrink-0" title={synced ? "Stored in your cloud library" : "Uploading to your cloud library"} style={{ opacity: synced ? 0.7 : 0.3 }}>
+            <Icon name="cloud" size={11} />
           </span>
         )}
-        <div className="flex-1" />
-        <button className="btn btn-xs" onClick={() => onLoad("A")} title="Load into deck A" style={{ color: "var(--a)" }}>
+      </div>
+      <div className="flex items-center gap-1.5 min-w-0">
+        <div className="text-[10.5px] text-muted font-mono tabular-nums truncate whitespace-nowrap flex-1 min-w-0" title={`${song.bpm.toFixed(1)} BPM · ${song.keyName} ${song.camelot} · ${fmtDuration(song.duration)} · ${ai ? "AI stems" : song.stemSource === "quick" ? "quick stems" : formatBytes(song.size)}`}>
+          {song.bpm.toFixed(1)} <span className="opacity-70">BPM</span> · {song.keyName} {song.camelot} · {fmtDuration(song.duration)}
+        </div>
+        <button className="btn btn-xs !h-[20px] !px-1.5 !text-[10.5px]" onClick={() => onLoad("A")} title="Load into deck A" style={{ color: "var(--a)" }}>
           A
         </button>
-        <button className="btn btn-xs" onClick={() => onLoad("B")} title="Load into deck B" style={{ color: "var(--b)" }}>
+        <button className="btn btn-xs !h-[20px] !px-1.5 !text-[10.5px]" onClick={() => onLoad("B")} title="Load into deck B" style={{ color: "var(--b)" }}>
           B
         </button>
-        <button className={`btn btn-xs btn-ghost ${confirming ? "!text-[#ff6b61] !bg-[#ff453a]/15" : "text-muted hover:!text-[#ff6b61]"}`} onClick={onDelete} title={confirming ? "Click again to delete this song and its stems everywhere" : "Delete from library"}>
-          {confirming ? "Delete?" : <Icon name="trash" size={11} />}
+        <button className={`btn btn-xs btn-ghost !h-[20px] !px-1 ${confirming ? "!text-[#ff6b61] !bg-[#ff453a]/15 !px-1.5 !text-[10.5px]" : "text-muted hover:!text-[#ff6b61]"}`} onClick={onDelete} title={confirming ? "Click again to delete this song and its stems everywhere" : "Delete from library"}>
+          {confirming ? "Delete?" : <Icon name="trash" size={10} />}
         </button>
       </div>
     </div>
