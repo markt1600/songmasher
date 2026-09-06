@@ -84,8 +84,9 @@ You receive:
 
 Respond with:
 - choice: the id of the candidate you would build, judged musically (a slightly lower score with a better structure
-  or a smaller pitch shift can be the right call; harmonic fit below ~0.5 is a real clash, avoid it). Null only when
-  you set constraints that require a new search.
+  or a smaller pitch shift can be the right call; harmonic fit below ~0.5 is a real clash, avoid it; a phrases score
+  below 0.8 means a line gets cut mid-sentence, so prefer candidates at or above it). Null only when you set
+  constraints that require a new search.
 - constraints: when the user's instruction asks for something the candidates don't offer, express it as search
   constraints (e.g. "bring the vocal in earlier" -> vocalEntryBar 4 or template vocal-first; "make it longer" ->
   lengthBars; "less pitch shifting" -> maxShift 1; "more energy" -> energy higher, template classic with hookBars 8;

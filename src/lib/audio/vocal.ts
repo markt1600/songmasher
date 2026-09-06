@@ -18,7 +18,10 @@ export interface VocalProfile {
   barVocal: number[];
   /** 12 x totalBars chroma of the vocal stem, each bar L1-normalised */
   barChroma: number[];
+  /** sung lines: hard boundaries a clip may start or end on */
   phrases: VocalPhrase[];
+  /** short dips inside lines (breaths, quiet syllables), in beats: acceptable places to cut when no line end fits */
+  breaths?: number[];
 }
 
 export interface GridInfo {
@@ -43,8 +46,24 @@ export function vocalProfile(mono: Float32Array, sr: number, grid: GridInfo): Vo
   const sorted = Float32Array.from(sm).sort();
   const floor = sorted[Math.floor(sorted.length * 0.2)] || 0;
   const peak = sorted[Math.floor(sorted.length * 0.99)] || 1;
-  const on = floor + (peak - floor) * 0.12;
-  const off = floor + (peak - floor) * 0.06;
+  // Local level: a soft verse must not be gated by the chorus's peak, or its quiet last words vanish
+  // and every line looks like it ends early. Rolling max over +-6 s, floored at a fifth of the song peak.
+  const win = Math.round((6 * sr) / hop);
+  const local = new Float32Array(nFrames);
+  {
+    // block maxima then a two-pass max filter
+    const step = Math.max(1, Math.round(win / 8));
+    const blocks = new Float32Array(Math.ceil(nFrames / step));
+    for (let f = 0; f < nFrames; f++) if (sm[f] > blocks[Math.floor(f / step)]) blocks[Math.floor(f / step)] = sm[f];
+    for (let f = 0; f < nFrames; f++) {
+      const b = Math.floor(f / step);
+      let m = 0;
+      for (let k = Math.max(0, b - 8); k <= Math.min(blocks.length - 1, b + 8); k++) if (blocks[k] > m) m = blocks[k];
+      local[f] = Math.max(m, floor + (peak - floor) * 0.2);
+    }
+  }
+  const onAt = (f: number) => floor + (local[f] - floor) * 0.12;
+  const offAt = (f: number) => floor + (local[f] - floor) * 0.05;
 
   // Hysteresis gate -> raw active regions
   const regions: { s: number; e: number; peak: number }[] = [];
@@ -53,6 +72,8 @@ export function vocalProfile(mono: Float32Array, sr: number, grid: GridInfo): Vo
   let rpeak = 0;
   for (let f = 0; f < nFrames; f++) {
     const v = sm[f];
+    const on = onAt(f);
+    const off = offAt(f);
     if (!active && v > on) {
       active = true;
       start = f;
@@ -75,17 +96,28 @@ export function vocalProfile(mono: Float32Array, sr: number, grid: GridInfo): Vo
       last.peak = Math.max(last.peak, r.peak);
     } else merged.push({ ...r });
   }
-  // Split long regions at sustained valleys (a breath under a reverb tail still dips well below the phrase level).
-  const minValley = Math.round((0.12 * sr) / hop);
+  // Split long regions only at long, deep valleys: a breath between two lines under a reverb tail dips
+  // far below the line level for a quarter second or more; a quiet syllable inside a line does not.
+  const minValley = Math.round((0.24 * sr) / hop);
+  const minBreath = Math.round((0.1 * sr) / hop);
+  const breathFrames: number[] = [];
   const split: { s: number; e: number; peak: number }[] = [];
   for (const r of merged) {
     let segStart = r.s;
     let segPeak = 0;
     let valleyStart = -1;
+    let breathStart = -1;
     for (let f = r.s; f < r.e; f++) {
       const v = sm[f];
       if (v > segPeak) segPeak = v;
-      const low = v < floor + (segPeak - floor) * 0.45;
+      const low = v < floor + (segPeak - floor) * 0.22;
+      const dip = v < floor + (segPeak - floor) * 0.35;
+      if (dip) {
+        if (breathStart < 0) breathStart = f;
+      } else if (breathStart >= 0) {
+        if (f - breathStart >= minBreath) breathFrames.push(Math.round((breathStart + f) / 2));
+        breathStart = -1;
+      }
       if (low) {
         if (valleyStart < 0) valleyStart = f;
       } else if (valleyStart >= 0) {
@@ -102,6 +134,8 @@ export function vocalProfile(mono: Float32Array, sr: number, grid: GridInfo): Vo
   const phrasesRaw = split.filter((r) => (r.e - r.s) * hop >= 0.25 * sr);
   const toBeat = (frame: number) => ((frame * hop) / sr - grid.firstDownbeat) / grid.beatInterval;
   const phrases: VocalPhrase[] = phrasesRaw.map((r) => ({ startBeat: Math.round(toBeat(r.s) * 8) / 8, endBeat: Math.round(toBeat(r.e) * 8) / 8, level: peak > 0 ? Math.min(1, r.peak / peak) : 0 }));
+  // breaths that coincide with a line boundary are redundant
+  const breaths = breathFrames.map((f) => Math.round(toBeat(f) * 8) / 8).filter((b) => !phrases.some((p) => Math.abs(p.endBeat - b) < 0.3 || Math.abs(p.startBeat - b) < 0.3));
 
   // Per-bar vocal energy
   const barLen = grid.beatInterval * 4;
@@ -119,7 +153,7 @@ export function vocalProfile(mono: Float32Array, sr: number, grid: GridInfo): Vo
 
   // Per-bar chroma of the vocal (melody notes)
   const barChroma = chromaPerBar(mono, sr, grid);
-  return { barVocal, barChroma, phrases };
+  return { barVocal, barChroma, phrases, breaths };
 }
 
 /** 12 x totalBars pitch-class energy, each bar normalised to sum 1 (zeros when silent). */

@@ -1914,7 +1914,7 @@ export const useStore = create<Store>((set, get) => {
         const ratio = fa.bpm / st.project.masterBpm;
         const spb = 60 / st.project.masterBpm;
         const available = Math.floor(((fa.duration - barToTime(fa, checked.foundation.startBar)) * ratio) / spb / 4);
-        if (available >= 8 && lengthBars > available) lengthBars = available;
+        if (available >= 8 && lengthBars > available) lengthBars = Math.max(growToFit(clips, 8), available);
       }
       // A loop region from earlier work would hold playback inside a slice of the new arrangement.
       const hadRegion = !!st.project.loopRegion;

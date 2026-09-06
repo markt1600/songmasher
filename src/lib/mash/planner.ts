@@ -105,7 +105,7 @@ export function harmonicFit(vocal: Float32Array, found: Float32Array, shift: num
 // Candidate vocal segments
 // ---------------------------------------------------------------------------
 
-interface VocalSegment {
+export interface VocalSegment {
   srcBar: number; // fractional when there is a pickup
   /** whole bars occupied on the grid (anchor bar to the bar line after the last phrase) */
   bars: number;
@@ -123,13 +123,16 @@ function vocalEnergyOf(song: PlannerSong, bar: number): number {
   return song.analysis.barVocal[bar] ?? 0;
 }
 
-function vocalSegments(song: PlannerSong, bars: number): VocalSegment[] {
+export function vocalSegments(song: PlannerSong, bars: number): VocalSegment[] {
   const a = song.analysis;
   const segs: VocalSegment[] = [];
   const sectionOf = (bar: number) => a.sections?.find((s) => bar >= s.startBar && bar < s.endBar);
   const kindOf = (bar: number, energy: number): "hook" | "verse" => {
     const sec = sectionOf(bar);
     if (sec?.label === "Chorus") return "hook";
+    // The loudest singing is hook material whatever the section map says; clearly quiet singing is not.
+    if (energy >= 0.75) return "hook";
+    if (energy < 0.5) return "verse";
     if (sec?.label === "Verse" || sec?.label === "Bridge" || sec?.label === "Pre-chorus") return "verse";
     return energy > 0.6 ? "hook" : "verse";
   };
@@ -159,15 +162,25 @@ function vocalSegments(song: PlannerSong, bars: number): VocalSegment[] {
         const anchorBar = isPickup ? nextBar : Math.floor(p / 4);
         const pickupBeats = isPickup ? Math.ceil(pickup * 4) / 4 : 0;
         if (anchorBar < 0) continue;
-        // Candidate ends: the end of any later phrase in the group; prefer the span closest to the requested length.
-        let best: { endBeat: number; spanBars: number; diff: number } | null = null;
-        for (let j = i; j < g.length; j++) {
-          const endBeat = g[j].endBeat;
+        // Candidate ends: the end of any later line in the group (clean), or a breath inside a long
+        // line (acceptable). Prefer the span closest to the requested length, clean ends first.
+        type End = { endBeat: number; spanBars: number; diff: number; clean: boolean };
+        const pick: { best: End | null } = { best: null };
+        const consider = (endBeat: number, clean: boolean) => {
           const spanBars = Math.ceil(endBeat / 4) - anchorBar;
-          if (spanBars < 2 || anchorBar + spanBars > a.totalBars) continue;
+          if (spanBars < 2 || anchorBar + spanBars > a.totalBars) return;
           const diff = Math.abs(spanBars - bars);
-          if (diff <= 2 && (!best || diff < best.diff || (diff === best.diff && spanBars > best.spanBars))) best = { endBeat, spanBars, diff };
+          if (diff > 2) return;
+          const b = pick.best;
+          const better = !b || (clean && !b.clean && diff <= b.diff + 1) || (clean === b.clean && (diff < b.diff || (diff === b.diff && spanBars > b.spanBars)));
+          if (better) pick.best = { endBeat, spanBars, diff, clean };
+        };
+        for (let j = i; j < g.length; j++) consider(g[j].endBeat, true);
+        if (!pick.best || !pick.best.clean) {
+          const groupEnd = g[g.length - 1].endBeat;
+          for (const br of song.vocal?.breaths ?? []) if (br > p + 4 && br < groupEnd) consider(br, false);
         }
+        const best = pick.best;
         if (!best) continue;
         const key = `${anchorBar}:${best.spanBars}`;
         if (seen.has(key)) continue;
@@ -176,14 +189,18 @@ function vocalSegments(song: PlannerSong, bars: number): VocalSegment[] {
         if (energy < 0.12) continue;
         const srcStartBeat = anchorBar * 4 - pickupBeats;
         const slotBars = best.spanBars % 2 === 1 ? best.spanBars + 1 : best.spanBars; // parts land on even bars
+        // Tail after the last word: up to 0.6 beat of room for the note to ring, but never into the next line.
+        const following = sorted.find((q) => q.startBeat > best.endBeat + 0.1);
+        const gap = following ? following.startBeat - best.endBeat : 8;
+        const tail = best.clean ? Math.max(0.25, Math.min(0.6, gap * 0.5)) : 0.1;
         segs.push({
           srcBar: anchorBar - pickupBeats / 4,
           bars: slotBars,
           pickupBeats,
-          audioBeats: best.endBeat - srcStartBeat + 0.25,
+          audioBeats: best.endBeat - srcStartBeat + tail,
           kind: kindOf(anchorBar, energy),
           energy,
-          phraseFit: 1 - best.diff * 0.1,
+          phraseFit: (best.clean ? 1 : 0.7) - best.diff * 0.1,
           label: `${song.name} bars ${anchorBar + 1}–${anchorBar + best.spanBars}`,
         });
       }
@@ -200,13 +217,21 @@ function vocalSegments(song: PlannerSong, bars: number): VocalSegment[] {
     if (phrases.length > 0) {
       const startBeat = b * 4;
       const endBeat = (b + bars) * 4;
+      // When we know where the lines are, a bar-line clip may never start or end inside one.
       const cutsIn = phrases.some((q) => q.startBeat < startBeat - 0.5 && q.endBeat > startBeat + 0.5);
+      if (cutsIn) continue;
       const cutsOut = phrases.find((q) => q.startBeat < endBeat - 0.5 && q.endBeat > endBeat + 0.5);
-      phraseFit = cutsIn ? 0.15 : cutsOut ? 0.3 : 0.5;
+      phraseFit = cutsOut ? 0.35 : 0.5;
       if (cutsOut) {
-        // never end in the middle of a line: stop at the last phrase end inside the window instead
         const inside = phrases.filter((q) => q.endBeat <= endBeat && q.endBeat > startBeat);
-        if (inside.length) audioBeats = Math.max(4, inside[inside.length - 1].endBeat - startBeat + 0.25);
+        if (inside.length) audioBeats = Math.max(4, inside[inside.length - 1].endBeat - startBeat + 0.5);
+        else {
+          // one long line fills the window: stop at the last breath inside it, or skip the window
+          const br = (song.vocal?.breaths ?? []).filter((x) => x > startBeat + 4 && x <= endBeat);
+          if (!br.length) continue;
+          audioBeats = br[br.length - 1] - startBeat + 0.1;
+          phraseFit = 0.3;
+        }
       }
     }
     segs.push({ srcBar: b, bars, pickupBeats: 0, audioBeats, kind: kindOf(b, energy), energy, phraseFit, label: `${song.name} bars ${b + 1}–${b + bars}` });
@@ -420,7 +445,7 @@ export function planMashup(songs: [PlannerSong, PlannerSong], constraints: PlanC
             fit: best.fit,
             slotBars: seg.bars,
             fadeIn: seg.pickupBeats > 0 ? 0.1 : 0.05,
-            fadeOut: layered ? 0.5 : 0.25,
+            fadeOut: layered ? Math.max(0.25, seg.audioBeats - Math.floor(seg.audioBeats)) : 0.25,
           });
           cursor += seg.bars;
         }
