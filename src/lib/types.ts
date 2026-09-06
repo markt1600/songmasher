@@ -95,6 +95,8 @@ export interface Project {
   automation: Automation;
   cues: CuePoint[];
   loopRegion: LoopRegion | null;
+  /** measure every part's loudness and trim it to a common level (default on; false switches it off) */
+  levelMatch?: boolean;
 }
 
 export const emptyAutomation = (): Automation => ({ level: [], filter: [] });

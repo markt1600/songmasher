@@ -239,6 +239,10 @@ interface Store {
   setAutomation: (param: "level" | "filter", points: AutomationPoint[]) => void;
   setLengthBars: (n: number) => void;
   toggleLoop: () => void;
+  /** turn automatic level matching on or off for this arrangement */
+  setLevelMatch: (on: boolean) => void;
+  /** dB trims the engine applied at the last play, by clip id (and "foundation") */
+  levelTrims: Record<string, number>;
   setZoom: (z: number) => void;
   separateQuick: (deckId: DeckId) => Promise<void>;
   separateAI: (deckId: DeckId, variant?: DemucsVariant) => Promise<void>;
@@ -857,6 +861,7 @@ export const useStore = create<Store>((set, get) => {
     claudeNotes: null,
     auditioning: false,
     soloClipId: null,
+    levelTrims: {},
     planHistory: [],
     claudeBusy: false,
     claudeError: null,
@@ -1548,6 +1553,12 @@ export const useStore = create<Store>((set, get) => {
       void restartIfPlaying();
     },
 
+    setLevelMatch: (on) => {
+      setProject({ ...get().project, levelMatch: on });
+      if (!on) set({ levelTrims: {} });
+      void restartIfPlaying();
+    },
+
     setZoom: (z) => set({ zoom: Math.max(4, Math.min(60, z)) }),
 
     separateQuick: async (deckId) => {
@@ -1669,7 +1680,7 @@ export const useStore = create<Store>((set, get) => {
       try {
         engine.onEnded = () => set({ playing: false });
         await engine.play(s.project, decks, start, s.transport, (label, value) => set({ busy: { label, value } }));
-        set({ playing: true, busy: null });
+        set({ playing: true, busy: null, levelTrims: engine.trimsDb() });
       } catch (err) {
         set({ busy: null, playing: false });
         get().showToast(`Playback failed: ${(err as Error).message}`);

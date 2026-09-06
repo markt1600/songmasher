@@ -1,3 +1,4 @@
+import { integratedLufs } from "../audio/master";
 import { barToTime, type SongAnalysis } from "../audio/analysis";
 import { audioBufferToChannels, channelsToAudioBuffer } from "../audio/wav";
 import type { AutomationPoint, Clip, DeckId, Project, StemKey, TransportOptions } from "../types";
@@ -20,6 +21,8 @@ export interface PlayEvent {
   durationSec: number;
   bufferOffsetSec: number; // seconds into the processed buffer
   gain: number;
+  /** level-match trim (linear) applied under the user gain; 1 when matching is off */
+  trim?: number;
   fadeIn: number; // seconds
   fadeOut: number;
   clipId?: string;
@@ -34,6 +37,16 @@ interface Scheduled {
 }
 
 const MIN_FADE = 0.006;
+
+/** Level matching: every part is trimmed towards this integrated loudness before the user's own gain. */
+export const LEVEL_TARGET_LUFS = -16;
+/** Parts that play over the foundation (rather than replacing it) sit a little under it. */
+const LAYER_OFFSET_DB: Record<StemKey, number> = { full: -4, vocals: -3, instrumental: -1, drums: -1, melodic: -3 };
+const TRIM_LIMIT_DB = 12;
+/** Regions quieter than this are treated as silence and left alone. */
+const SILENCE_LUFS = -45;
+/** Longest stretch measured for one part; a foundation's opening 90 s stands in for the whole. */
+const MEASURE_MAX_SEC = 90;
 
 export function stretchRatio(deck: EngineDeck, masterBpm: number): number {
   return deck.analysis.bpm / masterBpm;
@@ -175,6 +188,10 @@ export class Engine {
   private looping = false;
   private nextIterStart = 0;
   private current: { project: Project; decks: EngineDecks; events: PlayEvent[]; options: TransportOptions } | null = null;
+  /** integrated loudness per source region, keyed by deck/stem/buffer/region */
+  private loudness = new Map<string, number>();
+  /** level-match trims (linear) by clip id or "foundation" from the last prepare() */
+  private trims = new Map<string, number>();
   onEnded: (() => void) | null = null;
 
   get ctx(): AudioContext {
@@ -202,6 +219,7 @@ export class Engine {
 
   invalidateDeck(deckId: DeckId) {
     for (const k of Array.from(this.cache.keys())) if (k.startsWith(`${deckId}:`)) this.cache.delete(k);
+    for (const k of Array.from(this.loudness.keys())) if (k.startsWith(`${deckId}:`)) this.loudness.delete(k);
   }
 
   invalidateAll() {
@@ -236,7 +254,74 @@ export class Engine {
     const keys = new Set<string>();
     const unique = events.filter((e) => (keys.has(e.key) ? false : (keys.add(e.key), true)));
     for (const ev of unique) await this.getBuffer(ev, decks, project.masterBpm, onProgress);
+    this.applyLevelMatch(project, decks, events);
     return events;
+  }
+
+  /** Integrated loudness of one stem's source region (song seconds), cached per region. */
+  private regionLoudness(deck: EngineDeck, stem: StemKey, t0: number, t1: number): number {
+    const buf = deck.buffers[stem];
+    if (!buf) return SILENCE_LUFS;
+    const sr = buf.sampleRate;
+    const s0 = Math.max(0, Math.floor(t0 * sr));
+    const s1 = Math.min(buf.length, Math.ceil(Math.min(t1, t0 + MEASURE_MAX_SEC) * sr));
+    if (s1 - s0 < sr * 0.4) return SILENCE_LUFS;
+    const key = `${deck.id}:${stem}:${buf.length}:${s0}:${s1}`;
+    const hit = this.loudness.get(key);
+    if (hit !== undefined) return hit;
+    const chans: Float32Array[] = [];
+    for (let c = 0; c < Math.min(2, buf.numberOfChannels); c++) chans.push(buf.getChannelData(c).subarray(s0, s1));
+    const lufs = integratedLufs(chans, sr);
+    this.loudness.set(key, lufs);
+    return lufs;
+  }
+
+  /**
+   * Level matching: measure what each part actually sounds like at its source and trim it towards a
+   * common loudness, so a quiet vocal stem and a loud full mix sit together without hand-balancing.
+   * The foundation is measured once over everything it plays, so its own sections keep their dynamics.
+   */
+  private applyLevelMatch(project: Project, decks: EngineDecks, events: PlayEvent[]) {
+    this.trims.clear();
+    if (project.levelMatch === false) return;
+    const trimFor = (lufs: number, target: number) => {
+      if (lufs <= SILENCE_LUFS) return 1;
+      const db = Math.max(-TRIM_LIMIT_DB, Math.min(TRIM_LIMIT_DB, target - lufs));
+      return Math.pow(10, db / 20);
+    };
+    const f = project.foundation;
+    if (f && decks[f.deckId]) {
+      const deck = decks[f.deckId]!;
+      const ratio = stretchRatio(deck, project.masterBpm);
+      const fEvents = events.filter((e) => !e.clipId);
+      if (fEvents.length) {
+        const t0 = Math.min(...fEvents.map((e) => e.bufferOffsetSec)) / ratio;
+        const t1 = Math.max(...fEvents.map((e) => e.bufferOffsetSec + e.durationSec)) / ratio;
+        const trim = trimFor(this.regionLoudness(deck, f.stem, t0, t1), LEVEL_TARGET_LUFS);
+        for (const e of fEvents) e.trim = trim;
+        this.trims.set("foundation", trim);
+      }
+    }
+    for (const ev of events) {
+      if (!ev.clipId) continue;
+      const deck = decks[ev.deckId];
+      if (!deck) continue;
+      const clip = project.clips.find((c) => c.id === ev.clipId);
+      const ratio = stretchRatio(deck, project.masterBpm);
+      const t0 = ev.bufferOffsetSec / ratio;
+      const t1 = t0 + ev.durationSec / ratio;
+      const layered = !!f && clip?.mode !== "swap";
+      const target = LEVEL_TARGET_LUFS + (layered ? LAYER_OFFSET_DB[ev.stem] : 0);
+      ev.trim = trimFor(this.regionLoudness(deck, ev.stem, t0, t1), target);
+      this.trims.set(ev.clipId, ev.trim);
+    }
+  }
+
+  /** Level-match trims from the last prepare(), in dB by clip id (and "foundation"). */
+  trimsDb(): Record<string, number> {
+    const out: Record<string, number> = {};
+    for (const [k, v] of this.trims) out[k] = Math.round(20 * Math.log10(v) * 10) / 10;
+    return out;
   }
 
   /**
@@ -315,7 +400,7 @@ export class Engine {
       g.gain.setValueAtTime(1, Math.max(when, truncated ? when + dur - MIN_FADE : tailStartsAt));
       g.gain.linearRampToValueAtTime(0, when + dur);
       const level = ctx.createGain();
-      level.gain.value = ev.gain;
+      level.gain.value = ev.gain * (ev.trim ?? 1);
       src.connect(g);
       g.connect(level);
       level.connect(ev.clipId ? dest : lp);
@@ -423,7 +508,8 @@ export class Engine {
   setLevel(id: string, gain: number) {
     if (this.current) for (const ev of this.current.events) if ((ev.clipId ?? "foundation") === id) ev.gain = gain;
     const now = this.ctx.currentTime;
-    for (const s of this.scheduled) for (const n of s.levels.get(id) ?? []) n.gain.setTargetAtTime(gain, now, 0.015);
+    const trim = this.trims.get(id) ?? 1;
+    for (const s of this.scheduled) for (const n of s.levels.get(id) ?? []) n.gain.setTargetAtTime(gain * trim, now, 0.015);
   }
 
   seek(sec: number) {

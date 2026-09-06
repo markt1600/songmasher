@@ -60,7 +60,8 @@ npx tsx scripts/dsp-check.ts   # synthetic click tracks: verifies BPM, downbeat,
 3. On the other deck, drag across the waveform to select bars (a click selects a 4-bar phrase). **Audition** loops the selection at the master tempo. Then either drag the highlighted selection straight onto a timeline lane (it snaps to bars; hold `⌥` for beats) or press **Add to timeline** to append it to lane 1. Dropping a selection on the Foundation lane makes that song the foundation from those bars. Library cards can be dragged onto a deck to load them.
 4. Click a clip to hear it on its own at the master tempo (click again, or press the little play button on it, to stop); other clips dim while it plays. Select a clip to change its stem or level, repeat it, move it between lanes, or delete it. Drag to move, drag the right edge to resize. Hold `⌥` while dragging for quarter-beat positioning.
 5. Split stems when you want the vocal of one song over the instrumental of the other: *Quick* for instant results, *AI* for real separation. The foundation's stem is chosen on its deck; each clip's stem is chosen in the clip toolbar.
-6. Press space to play (looping by default), and **Export** when it's right.
+6. **Match levels** (on by default, in the timeline toolbar) measures each part's loudness at its source and trims it to a common level before your own clip gains, so a quiet vocal stem and a loud full mix sit together without hand-balancing; each clip shows the trim it received after you play. Swapped-in sections match the foundation exactly, layered stems sit a few dB under it. Turn it off to hear parts at their source volume.
+7. Press space to play (looping by default), and **Export** when it's right.
 
 ## Project layout
 

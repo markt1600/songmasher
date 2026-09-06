@@ -34,7 +34,8 @@ export default function Timeline() {
   const selectedClipIds = useStore((s) => s.selectedClipIds);
   const previewDeck = useStore((s) => s.previewDeck);
   const soloClipId = useStore((s) => s.soloClipId);
-  const { setZoom, selectClip, soloClip, updateClip, removeSelected, repeatSelected, setLengthBars, seek, clearClips, setFoundation, clearFoundation, addClip, moveClips, nudgeClip, autoAlignClip, setLoopRegion, addCue, updateCue, removeCue, loopSelected } = useStore();
+  const levelMatch = project.levelMatch !== false;
+  const { setZoom, selectClip, soloClip, setLevelMatch, updateClip, removeSelected, repeatSelected, setLengthBars, seek, clearClips, setFoundation, clearFoundation, addClip, moveClips, nudgeClip, autoAlignClip, setLoopRegion, addCue, updateCue, removeCue, loopSelected } = useStore();
   const scrollRef = useRef<HTMLDivElement>(null);
   const lanesRef = useRef<HTMLDivElement>(null);
   const register = useDnd((s) => s.register);
@@ -153,6 +154,17 @@ export default function Timeline() {
         </button>
         <button className="btn btn-sm" onClick={() => addCue()} title="Add a cue marker at the playhead (M)">
           <Icon name="flag" size={11} /> Cue
+        </button>
+        <button
+          className={`btn btn-sm ${levelMatch ? "text-accent-2 border-[#7c6cff]/60" : "text-muted"}`}
+          onClick={() => setLevelMatch(!levelMatch)}
+          aria-pressed={levelMatch}
+          title={levelMatch ? "Level matching is on: every part is measured and trimmed to a common loudness before its own level. Click to play parts at their source volume." : "Level matching is off: parts play at their source volume. Click to trim them to a common loudness automatically."}
+        >
+          <span style={{ opacity: levelMatch ? 1 : 0.25, display: "inline-flex" }}>
+            <Icon name="check" size={11} />
+          </span>{" "}
+          Match levels
         </button>
         <div className="flex-1" />
         {selected.length > 0 && (
@@ -330,7 +342,7 @@ export default function Timeline() {
             ))}
 
             {project.foundation && foundationDeck?.analysis && (
-              <FoundationBlock deckId={project.foundation.deckId} startBar={project.foundation.startBar} zoom={zoom} widthBeats={totalBeats} masterBpm={project.masterBpm} clips={project.clips} onRemove={clearFoundation} onStartBar={(b) => setFoundation(project.foundation!.deckId, { startBar: b })} />
+              <FoundationBlock deckId={project.foundation.deckId} stem={project.foundation.stem} startBar={project.foundation.startBar} zoom={zoom} widthBeats={totalBeats} masterBpm={project.masterBpm} clips={project.clips} onRemove={clearFoundation} onStartBar={(b) => setFoundation(project.foundation!.deckId, { startBar: b })} />
             )}
 
             {project.clips.map((c) => (
@@ -465,9 +477,15 @@ function AutomationLane({ param, points, zoom, totalBeats }: { param: "level" | 
   );
 }
 
-function MiniWave({ deckId, srcBar, lengthBeats, width, height }: { deckId: DeckId; srcBar: number; lengthBeats: number; width: number; height: number }) {
+function dbToGain(db: number): number {
+  return Math.pow(10, db / 20);
+}
+
+/** The clip's own audio, drawn from the stem it plays (falling back to the song's full-mix peaks), scaled by its trims. */
+function MiniWave({ deckId, stem, srcBar, lengthBeats, width, height, scale = 1 }: { deckId: DeckId; stem: StemKey; srcBar: number; lengthBeats: number; width: number; height: number; scale?: number }) {
   const ref = useRef<HTMLCanvasElement>(null);
   const analysis = useStore((s) => s.decks[deckId].analysis);
+  const buffer = useStore((s) => s.decks[deckId].buffers[stem]);
   useEffect(() => {
     const canvas = ref.current;
     if (!canvas || !analysis) return;
@@ -479,28 +497,54 @@ function MiniWave({ deckId, srcBar, lengthBeats, width, height }: { deckId: Deck
     ctx.clearRect(0, 0, width, height);
     const t0 = barToTime(analysis, srcBar);
     const t1 = t0 + lengthBeats * analysis.beatInterval;
-    const n = analysis.peaks.length;
-    const i0 = Math.max(0, Math.floor((t0 / analysis.duration) * n));
-    const i1 = Math.min(n, Math.ceil((t1 / analysis.duration) * n));
     const mid = height / 2;
     ctx.fillStyle = "rgba(255,255,255,0.75)";
     ctx.beginPath();
     const cols = Math.max(1, Math.floor(width / 2));
-    for (let c = 0; c < cols; c++) {
-      const j0 = i0 + Math.floor(((i1 - i0) * c) / cols);
-      const j1 = Math.max(j0 + 1, i0 + Math.floor(((i1 - i0) * (c + 1)) / cols));
-      let m = 0;
-      for (let j = j0; j < j1 && j < n; j++) if (analysis.peaks[j] > m) m = analysis.peaks[j];
-      const h = m * (mid - 2);
-      ctx.rect(c * 2, mid - h, 1.4, h * 2);
+    if (buffer) {
+      // Sample the stem itself so a vocal clip looks like the vocal, not the whole song.
+      const sr = buffer.sampleRate;
+      const i0 = Math.max(0, Math.floor(t0 * sr));
+      const i1 = Math.min(buffer.length, Math.ceil(t1 * sr));
+      const left = buffer.getChannelData(0);
+      const right = buffer.numberOfChannels > 1 ? buffer.getChannelData(1) : null;
+      for (let c = 0; c < cols; c++) {
+        const j0 = i0 + Math.floor(((i1 - i0) * c) / cols);
+        const j1 = Math.max(j0 + 1, i0 + Math.floor(((i1 - i0) * (c + 1)) / cols));
+        const stride = Math.max(1, Math.floor((j1 - j0) / 192));
+        let m = 0;
+        for (let j = j0; j < j1; j += stride) {
+          const v = Math.abs(left[j]);
+          if (v > m) m = v;
+          if (right) {
+            const u = Math.abs(right[j]);
+            if (u > m) m = u;
+          }
+        }
+        const h = Math.min(1, m * scale) * (mid - 2);
+        ctx.rect(c * 2, mid - h, 1.4, h * 2);
+      }
+    } else {
+      const n = analysis.peaks.length;
+      const i0 = Math.max(0, Math.floor((t0 / analysis.duration) * n));
+      const i1 = Math.min(n, Math.ceil((t1 / analysis.duration) * n));
+      for (let c = 0; c < cols; c++) {
+        const j0 = i0 + Math.floor(((i1 - i0) * c) / cols);
+        const j1 = Math.max(j0 + 1, i0 + Math.floor(((i1 - i0) * (c + 1)) / cols));
+        let m = 0;
+        for (let j = j0; j < j1 && j < n; j++) if (analysis.peaks[j] > m) m = analysis.peaks[j];
+        const h = Math.min(1, m * scale) * (mid - 2);
+        ctx.rect(c * 2, mid - h, 1.4, h * 2);
+      }
     }
     ctx.fill();
-  }, [analysis, srcBar, lengthBeats, width, height]);
+  }, [analysis, buffer, srcBar, lengthBeats, width, height, scale]);
   return <canvas ref={ref} style={{ width, height }} className="absolute inset-x-0 bottom-0 pointer-events-none opacity-70" />;
 }
 
-function FoundationBlock({ deckId, startBar, zoom, widthBeats, masterBpm, clips, onRemove, onStartBar }: { deckId: DeckId; startBar: number; zoom: number; widthBeats: number; masterBpm: number; clips: Clip[]; onRemove: () => void; onStartBar: (b: number) => void }) {
+function FoundationBlock({ deckId, stem, startBar, zoom, widthBeats, masterBpm, clips, onRemove, onStartBar }: { deckId: DeckId; stem: StemKey; startBar: number; zoom: number; widthBeats: number; masterBpm: number; clips: Clip[]; onRemove: () => void; onStartBar: (b: number) => void }) {
   const deck = useStore((s) => s.decks[deckId]);
+  const trimDb = useStore((s) => s.levelTrims.foundation ?? 0);
   const a = deck.analysis!;
   const color = DECK_COLORS[deckId];
   const ratio = a.bpm / masterBpm;
@@ -517,7 +561,7 @@ function FoundationBlock({ deckId, startBar, zoom, widthBeats, masterBpm, clips,
   if (cursor < beats) gaps.push([cursor, beats]);
   return (
     <div className="clip cursor-default" style={{ left: 0, width: w, top: 5, height: LANE_H - 10, background: `linear-gradient(180deg, ${color.main}55, ${color.main}22)`, borderColor: `${color.main}99` }} title={`${deck.name} from bar ${startBar + 1}`}>
-      <MiniWave deckId={deckId} srcBar={startBar} lengthBeats={beats} width={w} height={LANE_H - 30} />
+      <MiniWave deckId={deckId} stem={stem} srcBar={startBar} lengthBeats={beats} width={w} height={LANE_H - 30} scale={dbToGain(trimDb)} />
       {gaps.map(([a0, b0]) => (
         <div key={a0} className="absolute top-0 bottom-0 pointer-events-none" style={{ left: a0 * zoom, width: (b0 - a0) * zoom, background: "repeating-linear-gradient(135deg, rgba(0,0,0,0.55) 0 6px, rgba(0,0,0,0.35) 6px 12px)" }} title="Muted: a clip swaps the beat here" />
       ))}
@@ -556,6 +600,7 @@ function FoundationBlock({ deckId, startBar, zoom, widthBeats, masterBpm, clips,
 
 function ClipView({ clip, zoom, selected, selectedIds, solo, dimmed, onSelect, onMove, onResize, onRepeat, onSolo }: { clip: Clip; zoom: number; selected: boolean; selectedIds: string[]; solo: boolean; dimmed: boolean; onSelect: (add: boolean) => void; onMove: (deltaBeats: number, deltaLane: number) => void; onResize: (len: number) => void; onRepeat: () => void; onSolo: () => void }) {
   const deck = useStore((s) => s.decks[clip.deckId]);
+  const trimDb = useStore((s) => s.levelTrims[clip.id]);
   const color = DECK_COLORS[clip.deckId];
   const [drag, setDrag] = useState<{ mode: "move" | "resize"; startX: number; startY: number; origLen: number; plain: boolean } | null>(null);
   const [live, setLive] = useState<{ dBeats: number; dLane: number; len: number } | null>(null);
@@ -635,7 +680,7 @@ function ClipView({ clip, zoom, selected, selectedIds, solo, dimmed, onSelect, o
       }}
       title={`${deck.name} · bars ${clip.srcBar + 1}–${clip.srcBar + Math.ceil(clip.lengthBeats / 4)} · ${STEM_LABELS[clip.stem]}\nClick to play this clip alone (click again to stop) · drag to move · shift-click to multi-select · right edge resizes · double-click repeats`}
     >
-      <MiniWave deckId={clip.deckId} srcBar={clip.srcBar} lengthBeats={lengthBeats} width={w} height={LANE_H - 30} />
+      <MiniWave deckId={clip.deckId} stem={clip.stem} srcBar={clip.srcBar} lengthBeats={lengthBeats} width={w} height={LANE_H - 30} scale={dbToGain(trimDb ?? 0) * clip.gain} />
       {fadeInW > 0 && <div className="absolute top-0 bottom-0 left-0 pointer-events-none" style={{ width: fadeInW, background: "linear-gradient(90deg, rgba(0,0,0,0.55), transparent)" }} />}
       {fadeOutW > 0 && <div className="absolute top-0 bottom-0 right-0 pointer-events-none" style={{ width: fadeOutW, background: "linear-gradient(270deg, rgba(0,0,0,0.55), transparent)" }} />}
       <div className="absolute top-1.5 left-2 right-3 text-[11px] flex items-center gap-1.5 text-black/85 font-medium">
@@ -664,6 +709,12 @@ function ClipView({ clip, zoom, selected, selectedIds, solo, dimmed, onSelect, o
           {clip.mode === "swap" ? " · swap" : ""}
           {clip.offsetMs ? ` · ${clip.offsetMs > 0 ? "+" : ""}${clip.offsetMs}ms` : ""}
         </span>
+        {trimDb !== undefined && Math.abs(trimDb) >= 0.5 && (
+          <span className="ml-auto shrink-0 font-mono tabular-nums text-[9.5px] px-1 rounded bg-black/25 text-black/80" title={`Level matching trimmed this part by ${trimDb > 0 ? "+" : ""}${trimDb.toFixed(1)} dB`}>
+            {trimDb > 0 ? "+" : ""}
+            {trimDb.toFixed(1)} dB
+          </span>
+        )}
       </div>
       <div className="handle" onPointerDown={(e) => onPointerDown(e, "resize")} />
     </div>
