@@ -48,6 +48,8 @@ export function Icon({ name, size = 16 }: { name: string; size?: number }) {
       return <svg {...common}><circle cx="8" cy="15" r="4" /><path d="M10.9 12.1L21 2" /><path d="M17 6l3 3" /><path d="M14 9l3 3" /></svg>;
     case "flag":
       return <svg {...common}><path d="M5 21V4" /><path d="M5 4h12l-2 4 2 4H5" /></svg>;
+    case "reset":
+      return <svg {...common}><path d="M3 12a9 9 0 1 0 3-6.7" /><path d="M3 4v5h5" /></svg>;
     case "undo":
       return <svg {...common}><path d="M9 14L4 9l5-5" /><path d="M4 9h10a6 6 0 010 12h-3" /></svg>;
     case "redo":

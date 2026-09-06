@@ -199,6 +199,8 @@ interface Store {
   deleteFromLibrary: (id: string) => Promise<void>;
   loadFile: (deckId: DeckId, file: File) => Promise<void>;
   clearDeck: (deckId: DeckId) => void;
+  /** empty both decks and the arrangement, forget the plan, and start from a blank studio (the library is untouched) */
+  startOver: () => void;
   setMasterBpm: (bpm: number) => void;
   adoptDeckTempo: (deckId: DeckId) => void;
   nudgeDownbeat: (deckId: DeckId, beats: number) => void;
@@ -1204,6 +1206,43 @@ export const useStore = create<Store>((set, get) => {
         return { decks: { ...s.decks, [deckId]: emptyDeck(deckId) }, project: { ...s.project, clips, foundation }, playing: false, previewDeck: null, selectedClipIds: [] };
       });
       refreshSuggestions();
+    },
+
+    startOver: () => {
+      engine.stop();
+      engine.invalidateAll();
+      history.past = [];
+      history.future = [];
+      if (autosaveTimer) window.clearTimeout(autosaveTimer);
+      clipboard = [];
+      set({
+        decks: { A: emptyDeck("A"), B: emptyDeck("B") },
+        project: { masterBpm: 120, foundation: null, clips: [], lengthBars: 16, loop: true, automation: emptyAutomation(), cues: [], loopRegion: null },
+        playing: false,
+        previewDeck: null,
+        auditioning: false,
+        soloClipId: null,
+        levelTrims: {},
+        selectedClipIds: [],
+        currentProject: null,
+        dirty: false,
+        canUndo: false,
+        canRedo: false,
+        restorable: null,
+        suggestions: [],
+        claudePlan: null,
+        candidates: [],
+        selectedCandidateId: null,
+        planConstraints: {},
+        claudeNotes: null,
+        claudeError: null,
+        planHistory: [],
+      });
+      try {
+        window.localStorage.removeItem("songmasher.session");
+      } catch {
+        /* ignore */
+      }
     },
 
     setMasterBpm: (bpm) => {

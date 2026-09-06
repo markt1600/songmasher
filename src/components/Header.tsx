@@ -11,11 +11,13 @@ export default function Header() {
   const soloClipId = useStore((s) => s.soloClipId);
   const busy = useStore((s) => s.busy);
   const decks = useStore((s) => s.decks);
-  const { play, pause, stop, toggleLoop, setMasterBpm, adoptDeckTempo, exportMix, toggleMetronome, toggleCountIn, undo, redo, saveProject, saveProjectAs, newProject } = useStore();
+  const { play, pause, stop, toggleLoop, setMasterBpm, adoptDeckTempo, exportMix, toggleMetronome, toggleCountIn, undo, redo, saveProject, saveProjectAs, newProject, startOver } = useStore();
   const currentProject = useStore((s) => s.currentProject);
   const dirty = useStore((s) => s.dirty);
   const config = useStore((s) => s.config);
   const [projectMenu, setProjectMenu] = useState(false);
+  const [confirmReset, setConfirmReset] = useState(false);
+  const hasWork = useStore((s) => s.decks.A.status !== "empty" || s.decks.B.status !== "empty" || s.project.clips.length > 0);
   const transport = useStore((s) => s.transport);
   const canUndo = useStore((s) => s.canUndo);
   const canRedo = useStore((s) => s.canRedo);
@@ -88,6 +90,24 @@ export default function Header() {
             </div>
           )}
         </div>
+
+        <button
+          className={`btn btn-ghost ml-1 ${confirmReset ? "!text-[#ff6b61] !bg-[#ff453a]/15" : "text-muted"}`}
+          disabled={!hasWork}
+          onClick={() => {
+            if (confirmReset) {
+              setConfirmReset(false);
+              setProjectMenu(false);
+              startOver();
+            } else {
+              setConfirmReset(true);
+              window.setTimeout(() => setConfirmReset(false), 3500);
+            }
+          }}
+          title={confirmReset ? "Click again to empty both decks and the timeline. Your library and saved mashups are kept." : "Start over: empty both decks, clear the timeline and the plan. Songs stay in your library."}
+        >
+          <Icon name="reset" size={13} /> <span className="hidden sm:inline">{confirmReset ? "Clear everything?" : "Start over"}</span>
+        </button>
 
         <div className="flex-1" />
 
