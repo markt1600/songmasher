@@ -2,6 +2,7 @@
 import { useMemo, useRef, useState } from "react";
 import { useStore } from "@/lib/store";
 import { formatBytes, type LibraryMix, type LibraryProject, type LibrarySong } from "@/lib/library";
+import { GRADE_COLOR, GRADE_LABEL, matchSongs, type MatchInfo } from "@/lib/match";
 import { DECK_COLORS, type DeckId } from "@/lib/types";
 import { Icon } from "./ui";
 import { beginDragOnMove } from "@/lib/dnd";
@@ -12,7 +13,7 @@ function fmtDuration(sec: number): string {
   return `${m}:${s.toString().padStart(2, "0")}`;
 }
 
-type SongSort = "recent" | "name" | "bpm";
+type SongSort = "recent" | "name" | "bpm" | "match";
 /** Songs shown before "Show all": about two rows on a wide screen. */
 const SONG_LIMIT = 12;
 function readPref(key: string, fallback: string): string {
@@ -54,14 +55,28 @@ export default function Library() {
   });
   const [showAll, setShowAll] = useState(() => readPref("songShowAll", "0") === "1");
 
+  // The song on deck A (or B when A is empty) is the reference every other song is judged against.
+  const refDeck: DeckId | null = decks.A.status === "ready" && decks.A.analysis ? "A" : decks.B.status === "ready" && decks.B.analysis ? "B" : null;
+  const refSongId = refDeck ? decks[refDeck].songId : null;
+  const refAnalysis = refDeck ? decks[refDeck].analysis : null;
+  const matches = useMemo(() => {
+    const out = new Map<string, MatchInfo>();
+    if (!refAnalysis) return out;
+    for (const song of library) if (song.id !== refSongId && song.analysis?.key) out.set(song.id, matchSongs({ bpm: refAnalysis.bpm, key: refAnalysis.key }, { bpm: song.bpm, key: song.analysis.key }));
+    return out;
+  }, [library, refAnalysis, refSongId]);
+  // "Recent" quietly becomes "Match" while a reference song is loaded, so the best partners float to the top.
+  const effectiveSort: SongSort = sort === "recent" && matches.size > 0 ? "match" : sort === "match" && matches.size === 0 ? "recent" : sort;
+
   const songs = useMemo(() => {
     const q = query.trim().toLowerCase();
     const list = q ? library.filter((x) => x.name.toLowerCase().includes(q) || x.keyName.toLowerCase().includes(q) || x.camelot.toLowerCase() === q) : [...library];
-    if (sort === "name") list.sort((a, b) => a.name.localeCompare(b.name, undefined, { numeric: true, sensitivity: "base" }));
-    else if (sort === "bpm") list.sort((a, b) => a.bpm - b.bpm);
+    if (effectiveSort === "name") list.sort((a, b) => a.name.localeCompare(b.name, undefined, { numeric: true, sensitivity: "base" }));
+    else if (effectiveSort === "bpm") list.sort((a, b) => a.bpm - b.bpm);
+    else if (effectiveSort === "match") list.sort((a, b) => (a.id === refSongId ? -1 : b.id === refSongId ? 1 : (matches.get(b.id)?.score ?? -1) - (matches.get(a.id)?.score ?? -1) || b.addedAt - a.addedAt));
     else list.sort((a, b) => b.addedAt - a.addedAt);
     return list;
-  }, [library, query, sort]);
+  }, [library, query, effectiveSort, matches, refSongId]);
   const capped = !showAll && !query.trim() && songs.length > SONG_LIMIT;
   const visible = capped ? songs.slice(0, SONG_LIMIT) : songs;
 
@@ -105,6 +120,11 @@ export default function Library() {
             <Icon name="cloud" size={10} /> Cloud
           </span>
         )}
+        {refDeck && matches.size > 0 && (
+          <span className="chip hidden sm:inline-flex" title="Each song is judged against the song on this deck: same, relative or neighbouring keys score highest (small pitch shifts are allowed), and tempos that need little stretching, including half and double time.">
+            <span className="h-[7px] w-[7px] rounded-full" style={{ background: DECK_COLORS[refDeck].main }} /> Matches for {refDeck} · {decks[refDeck].name}
+          </span>
+        )}
         <div className="flex-1" />
         {library.length > 6 && (
           <>
@@ -123,17 +143,17 @@ export default function Library() {
               )}
             </div>
             <div className="seg hidden md:inline-flex" title="Sort songs">
-              {(["recent", "name", "bpm"] as SongSort[]).map((k) => (
+              {([...(matches.size > 0 ? ["match"] : []), "recent", "name", "bpm"] as SongSort[]).map((k) => (
                 <button
                   key={k}
-                  data-active={sort === k}
+                  data-active={effectiveSort === k}
                   style={{ height: 22, fontSize: 11.5, padding: "0 8px" }}
                   onClick={() => {
                     setSort(k);
                     writePref("songSort", k);
                   }}
                 >
-                  {k === "recent" ? "Recent" : k === "name" ? "Name" : "BPM"}
+                  {k === "match" ? "Match" : k === "recent" ? "Recent" : k === "name" ? "Name" : "BPM"}
                 </button>
               ))}
             </div>
@@ -174,6 +194,7 @@ export default function Library() {
               key={song.id}
               song={song}
               cloud={config.cloud}
+              match={matches.get(song.id) ?? null}
               loadedOn={loadedOn(song.id)}
               confirming={confirmId === song.id}
               onLoad={(deck) => void loadFromLibrary(deck, song.id)}
@@ -339,15 +360,16 @@ function MixCard({ m, link, onPlay, onShare, onDelete }: { m: LibraryMix; link: 
   );
 }
 
-function SongCard({ song, cloud, loadedOn, confirming, onLoad, onDelete }: { song: LibrarySong; cloud: boolean; loadedOn: DeckId | null; confirming: boolean; onLoad: (deck: DeckId) => void; onDelete: () => void }) {
-  const ring = loadedOn ? DECK_COLORS[loadedOn].main : undefined;
+function SongCard({ song, cloud, match, loadedOn, confirming, onLoad, onDelete }: { song: LibrarySong; cloud: boolean; match: MatchInfo | null; loadedOn: DeckId | null; confirming: boolean; onLoad: (deck: DeckId) => void; onDelete: () => void }) {
+  const great = !loadedOn && match?.grade === "great";
+  const ring = loadedOn ? DECK_COLORS[loadedOn].main : great ? GRADE_COLOR.great : undefined;
   const synced = !!song.fileUrl;
   const ai = song.stemSource === "ai" && song.aiStems.length > 0;
   return (
     <div
       className="relative min-w-0 rounded-[10px] inset px-2.5 py-2 flex flex-col gap-1.5 transition-[border-color,box-shadow] duration-150 fade-in cursor-grab active:cursor-grabbing"
-      style={ring ? { borderColor: `${ring}88`, boxShadow: `0 0 0 1px ${ring}33` } : undefined}
-      title={`${song.name}\nDrag onto a deck to load it`}
+      style={ring ? { borderColor: `${ring}88`, boxShadow: `0 0 0 1px ${ring}33` } : match?.grade === "poor" ? { opacity: 0.6 } : undefined}
+      title={`${song.name}${match ? `\n${GRADE_LABEL[match.grade]}: ${match.summary}` : ""}\nDrag onto a deck to load it`}
       onPointerDown={(e) => {
         if ((e.target as HTMLElement).closest("button")) return;
         beginDragOnMove(e, { kind: "song", id: song.id, name: song.name });
@@ -360,6 +382,12 @@ function SongCard({ song, cloud, loadedOn, confirming, onLoad, onDelete }: { son
           </span>
         )}
         <div className="text-[12.5px] font-semibold truncate tracking-[-0.01em] flex-1 min-w-0">{song.name}</div>
+        {match && !loadedOn && (
+          <span className="shrink-0 inline-flex items-center gap-1 text-[9.5px] font-medium rounded-full px-1.5 h-[15px]" style={{ color: GRADE_COLOR[match.grade], background: `${GRADE_COLOR[match.grade]}1f` }} title={`${GRADE_LABEL[match.grade]}: ${match.summary}`} data-match={match.grade}>
+            <span className="h-[5px] w-[5px] rounded-full" style={{ background: GRADE_COLOR[match.grade] }} />
+            {match.grade === "great" ? "Great" : match.grade === "good" ? "Good" : match.grade === "fair" ? "Fair" : "Poor"}
+          </span>
+        )}
         {ai && (
           <span className="shrink-0" style={{ color: "var(--accent-2)" }} title="Demucs stems are saved with this song">
             <Icon name="sparkles" size={10} />
