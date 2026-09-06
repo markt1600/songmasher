@@ -80,8 +80,17 @@ export default function Advisor() {
       {claudeError && <div className="text-[12px] text-[#ff6b61]">{claudeError}</div>}
 
       {selected && (
-        <div className="rounded-[12px] border border-[#7c6cff]/30 bg-[#7c6cff]/10 p-4 flex flex-col gap-3 fade-in">
-          <div className="flex flex-wrap items-center gap-2">
+        <div className={`rounded-[12px] border border-[#7c6cff]/30 bg-[#7c6cff]/10 p-4 flex flex-col gap-3 fade-in ${claudeBusy ? "thinking" : ""}`} aria-busy={claudeBusy}>
+          {claudeBusy && (
+            <div className="flex items-center gap-2.5 rounded-[10px] bg-[#7c6cff]/20 border border-[#9d8cff]/40 px-3 py-2 text-[12.5px]" role="status">
+              <span className="h-3.5 w-3.5 rounded-full border-2 border-white/30 border-t-white animate-spin shrink-0" />
+              <span>
+                <b className="thinking-label">Claude is {planHistory.length || instruction ? "revising the plan" : "choosing the best arrangement"}</b>
+                <span className="text-text-2"> The plan below may still change. Hold off on Apply until it settles.</span>
+              </span>
+            </div>
+          )}
+          <div className={`flex flex-wrap items-center gap-2 ${claudeBusy ? "thinking-dim" : ""}`}>
             <Icon name="wand" size={14} />
             <div className="font-medium">
               {TEMPLATE_NAME[selected.template]} · {decks[selected.foundation.deck].name} under {decks[selected.vocalDeck].name}
@@ -99,24 +108,24 @@ export default function Advisor() {
               <b>{selected.lengthBars}</b> bars
             </span>
             <div className="flex-1" />
-            <button className="btn btn-sm" onClick={() => (isAuditioning ? stopAudition() : void auditionCandidate(selected.id))} title="Loop the first hook over the foundation without changing your timeline">
+            <button className="btn btn-sm" disabled={claudeBusy} onClick={() => (isAuditioning ? stopAudition() : void auditionCandidate(selected.id))} title="Loop the first hook over the foundation without changing your timeline">
               <Icon name={isAuditioning ? "stop" : "play"} size={11} /> {isAuditioning ? "Stop" : "Audition hook"}
             </button>
-            <button className="btn btn-sm btn-primary" onClick={() => applyCandidate(selected.id)}>
-              Apply plan
+            <button className="btn btn-sm btn-primary" disabled={claudeBusy} onClick={() => applyCandidate(selected.id)} title={claudeBusy ? "Wait for Claude to finish" : "Build this arrangement on the timeline"}>
+              {claudeBusy ? "Waiting for Claude…" : "Apply plan"}
             </button>
           </div>
 
-          <div className="flex flex-wrap gap-4">
+          <div className={`flex flex-wrap gap-4 ${claudeBusy ? "thinking-dim" : ""}`}>
             <Meter label="Chord fit" value={selected.breakdown.harmony} title="How well the vocal's notes agree with the foundation's chords, bar by bar" />
             <Meter label="Phrases" value={selected.breakdown.phrases} title="Clips start and end on sung phrases instead of cutting through them" />
             <Meter label="Energy" value={selected.breakdown.energy} title="Loud vocal parts land in hook slots, quieter ones in breakdowns" />
             <Meter label="Stretch" value={selected.breakdown.stretch} title="How little time-stretching the tempo match needs" />
           </div>
 
-          <p className="text-sm leading-relaxed">{claudeNotes?.choice === selected.id ? claudeNotes.summary : selected.description}</p>
+          <p className={`text-sm leading-relaxed ${claudeBusy ? "thinking-dim" : ""}`}>{claudeNotes?.choice === selected.id ? claudeNotes.summary : selected.description}</p>
 
-          <div className="overflow-x-auto">
+          <div className={`overflow-x-auto ${claudeBusy ? "thinking-dim" : ""}`}>
             <table className="text-[0.72rem] w-full">
               <thead className="text-muted">
                 <tr className="text-left">
@@ -193,7 +202,7 @@ export default function Advisor() {
 
           {/* Alternatives */}
           {candidates.length > 1 && (
-            <div className="flex flex-col gap-1.5">
+            <div className={`flex flex-col gap-1.5 ${claudeBusy ? "thinking-dim" : ""}`}>
               <span className="label">Alternatives</span>
               <div className="flex gap-2 overflow-x-auto pb-1">
                 {candidates.slice(0, 6).map((c) => (
@@ -204,7 +213,7 @@ export default function Advisor() {
           )}
 
           {/* Refinement */}
-          <div className="flex flex-wrap items-center gap-1.5">
+          <div className={`flex flex-wrap items-center gap-1.5 ${claudeBusy ? "thinking-dim" : ""}`}>
             <span className="label mr-1">Adjust</span>
             <button className="btn btn-xs" onClick={() => quick({ vocalEntryBar: 4 }, "bring the vocal in earlier")}>Vocal earlier</button>
             <button className="btn btn-xs" onClick={() => quick({ energy: "higher", template: "classic" }, "more energy")}>More energy</button>
