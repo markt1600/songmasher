@@ -398,6 +398,44 @@ export const useStore = create<Store>((set, get) => {
     return song;
   };
 
+  /**
+   * A deck can outlive its library record (a cloud refresh once dropped freshly added songs). Rebuild the
+   * record from the deck's own file and analysis so stems, sections and projects can be saved again.
+   */
+  const resaveDeckSong = async (deckId: DeckId): Promise<LibrarySong | undefined> => {
+    const d = get().decks[deckId];
+    if (!d.songId || !d.file || !d.analysis) return undefined;
+    const song: LibrarySong = {
+      id: d.songId,
+      name: d.name,
+      fileName: d.file.name,
+      mimeType: d.file.type || "audio/mpeg",
+      size: d.file.size,
+      addedAt: Date.now(),
+      lastUsedAt: Date.now(),
+      duration: d.duration,
+      bpm: d.analysis.bpm,
+      keyName: d.analysis.key.name,
+      camelot: d.analysis.key.camelot,
+      analysis: d.analysis,
+      vocal: d.vocal,
+      semitones: d.semitones,
+      stemSource: "none",
+      aiStems: [],
+    };
+    try {
+      await lib.putFile(`${song.id}:full`, d.file);
+      await lib.putSong(song);
+    } catch (err) {
+      console.warn("Could not re-save the song", err);
+      return undefined;
+    }
+    set((s) => ({ library: [song, ...s.library.filter((x) => x.id !== song.id)] }));
+    get().showToast(`${song.name} was missing from the library and has been saved again`);
+    if (get().config.cloud) void syncSongToCloud(song);
+    return song;
+  };
+
   // ---- Cloud sync helpers -------------------------------------------------
 
   /** Resolves the access code, prompting once if the server requires one. Returns undefined if the user cancels. */
@@ -466,7 +504,11 @@ export const useStore = create<Store>((set, get) => {
       try {
         const url = await withCode((code) => cloud.cloudUploadSong(song.id, blob, song.fileName, code));
         if (!url) return undefined;
-        await persistSong(song.id, { fileUrl: url, cloud: true }, true);
+        // Write the cloud record first; only a song the cloud actually lists may be flagged as cloud-backed,
+        // otherwise a refresh could mistake it for one deleted elsewhere and drop it locally.
+        const withUrl = (await lib.updateSong(song.id, { fileUrl: url })) ?? { ...song, fileUrl: url };
+        await withCode((code) => cloud.cloudPutMeta({ ...withUrl, cloud: true }, code));
+        await persistSong(song.id, { fileUrl: url, cloud: true });
         return url;
       } finally {
         uploading.delete(song.id);
@@ -937,6 +979,7 @@ export const useStore = create<Store>((set, get) => {
         return;
       }
       const remoteById = new Map(remote.songs.map((r) => [r.id, r]));
+      const onDeck = (id: string) => (["A", "B"] as DeckId[]).some((d) => get().decks[d].songId === id && get().decks[d].status !== "empty");
       const merged: LibrarySong[] = [];
       const toUpload: LibrarySong[] = [];
       for (const l of local) {
@@ -950,8 +993,9 @@ export const useStore = create<Store>((set, get) => {
           await lib.putSong(next);
           if (!remoteNewer && (l.updatedAt ?? 0) > (r.updatedAt ?? 0)) scheduleCloudMeta(next);
           merged.push(next);
-        } else if (l.cloud) {
-          // deleted from another device
+        } else if (l.cloud && !onDeck(l.id) && Date.now() - (l.updatedAt ?? l.addedAt) > 10 * 60_000) {
+          // deleted from another device (cloud listings can lag a freshly written record by a while, so
+          // anything touched in the last ten minutes, or sitting on a deck, is kept and re-synced instead)
           await lib.deleteSong(l.id);
         } else {
           merged.push(l);
@@ -1646,9 +1690,9 @@ export const useStore = create<Store>((set, get) => {
       const d = get().decks[deckId];
       const full = d.buffers.full;
       if (!full || !d.songId) return;
-      const song = await lib.getSong(d.songId);
+      const song = (await lib.getSong(d.songId)) ?? (await resaveDeckSong(deckId));
       if (!song) {
-        get().showToast("Save the song to the library first");
+        get().showToast("This song is no longer in the library and its file is gone. Add it again from the file to separate stems.");
         return;
       }
       setDeck(deckId, { stemBusy: true, stemProgress: "Uploading song" });
