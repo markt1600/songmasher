@@ -6,6 +6,7 @@
 import type { SongAnalysis } from "../audio/analysis";
 import type { VocalProfile } from "../audio/vocal";
 import type { DeckId, StemKey } from "../types";
+import { hookRange } from "../audio/sections";
 
 export interface PlannerSong {
   deck: DeckId;
@@ -27,10 +28,13 @@ export interface PlanConstraints {
   /** max |semitones| allowed for the pitch shift */
   maxShift?: number;
   template?: TemplateId;
+  /** "both": the foundation song's own vocal takes turns with the other song's (duet templates) */
+  vocals?: "one" | "both";
 }
 
-export type TemplateId = "classic" | "vocal-first" | "call-response" | "extended";
-type SlotKind = "hook" | "verse" | "swap";
+export type TemplateId = "classic" | "vocal-first" | "call-response" | "extended" | "duet" | "duet-verse";
+/** fvocal = the foundation song's own singing, in place over its own instrumental */
+type SlotKind = "hook" | "verse" | "swap" | "fvocal";
 interface Slot {
   kind: SlotKind;
   startBar: number; // timeline
@@ -281,6 +285,20 @@ function template(id: TemplateId, c: PlanConstraints, availableBars: number): { 
       push("hook", hook);
       push("hook", hook);
       break;
+    case "duet":
+      push("hook", hook);
+      push("fvocal", hook);
+      push("hook", hook);
+      push("fvocal", hook);
+      push("hook", hook);
+      break;
+    case "duet-verse":
+      push("verse", hook);
+      push("fvocal", hook);
+      push("hook", hook);
+      push("fvocal", hook);
+      push("hook", hook);
+      break;
   }
   let length = c.lengthBars ?? t + 4;
   if (length > availableBars) length = Math.max(8, Math.floor(availableBars / 4) * 4);
@@ -329,7 +347,17 @@ export function planMashup(songs: [PlannerSong, PlannerSong], constraints: PlanC
   const stretchPenalty = Math.min(1, Math.abs(Math.log(vBpmEff / masterBpm)) / 0.15 + Math.abs(Math.log(fa.bpm / masterBpm)) / 0.15);
 
   const maxShift = constraints.maxShift ?? 3;
-  const templates: TemplateId[] = constraints.template ? [constraints.template] : layered ? ["classic", "vocal-first", "extended", "call-response"] : ["call-response", "classic"];
+  const both = constraints.vocals === "both";
+  const templates: TemplateId[] = constraints.template
+    ? [constraints.template]
+    : both
+      ? ["duet", "duet-verse", "classic", "call-response"]
+      : layered
+        ? ["classic", "vocal-first", "extended", "call-response"]
+        : ["call-response", "classic"];
+  const fVocalEnergy = (bar: number) => (F.vocal ? F.vocal.barVocal[bar] ?? 0 : fa.barVocal[bar] ?? 0);
+  const fSegs = F.vocal && F.stems.includes("vocals") ? vocalSegments(F, constraints.hookBars ?? (fa.totalBars < 40 ? 4 : 8)) : [];
+  const fHook = hookRange(fa.sections ?? [], fa.barEnergy, F.vocal ? F.vocal.barVocal : fa.barVocal);
   const results: PlanCandidate[] = [];
   const segsByBars = new Map<number, VocalSegment[]>();
   const segsFor = (bars: number) => {
@@ -375,6 +403,42 @@ export function planMashup(songs: [PlannerSong, PlannerSong], constraints: PlanC
           const slotStart = cursor;
           if (fStart + slotStart + 2 > fa.totalBars) break;
           placed++;
+          if (slot.kind === "fvocal") {
+            // The foundation song sings its own part, exactly where it sits over its own instrumental.
+            const alignedBar = fStart + slotStart;
+            let e = 0;
+            for (let i = 0; i < hook; i++) e += fVocalEnergy(alignedBar + i);
+            e /= hook;
+            const inPlace = fSegs.filter((sg) => {
+              const anchor = Math.round(sg.srcBar + sg.pickupBeats / 4);
+              return anchor >= alignedBar && anchor <= alignedBar + 1 && anchor + sg.bars <= fa.totalBars;
+            });
+            if (F.vocal && F.stems.includes("vocals") && e >= 0.35 && inPlace.length) {
+              const sg = inPlace.sort((x, y) => y.phraseFit - x.phraseFit || y.energy - x.energy)[0];
+              const startBeat = (sg.srcBar - fStart) * 4;
+              if (startBeat >= 0) {
+                clips.push({ deck: F.deck, stem: "vocals", srcBar: sg.srcBar, lengthBeats: sg.audioBeats, startBeat, lane: 2, mode: "layer", label: "Their turn", fit: 1, slotBars: sg.bars, fadeIn: 0.1, fadeOut: Math.max(0.25, sg.audioBeats - Math.floor(sg.audioBeats)) });
+                harmony += 1;
+                phrases += sg.phraseFit;
+                energyFit += Math.min(1, sg.energy / 0.8);
+                slotTotal += 0.45 + sg.phraseFit * 0.3 + Math.min(1, sg.energy / 0.8) * 0.2;
+                n++;
+                cursor = Math.round(sg.srcBar + sg.pickupBeats / 4) - fStart + sg.bars;
+                continue;
+              }
+            }
+            // No usable singing here: swap the foundation song's own chorus in as a full section.
+            const hr = fHook ?? { startBar: alignedBar, endBar: Math.min(fa.totalBars, alignedBar + hook) };
+            const bars = Math.max(4, Math.min(hook, hr.endBar - hr.startBar));
+            clips.push({ deck: F.deck, stem: "full", srcBar: hr.startBar, lengthBeats: bars * 4, startBeat: slotStart * 4, lane: 2, mode: "swap", label: "Their chorus", fit: 1, slotBars: bars, fadeIn: 0, fadeOut: 0.5 });
+            harmony += 1;
+            phrases += 0.6;
+            energyFit += 0.8;
+            slotTotal += 0.45 + 0.6 * 0.3 + 0.8 * 0.2;
+            n++;
+            cursor += bars;
+            continue;
+          }
           if (slot.kind === "swap") {
             const all = segsFor(hook);
             const cands = all.filter((s) => s.kind === "hook" || s.energy > 0.5);
@@ -456,7 +520,9 @@ export function planMashup(songs: [PlannerSong, PlannerSong], constraints: PlanC
         energyFit /= n;
         // Rank candidates by the same blended slot score used to choose their parts, plus global terms.
         const missing = slots.length - placed;
-        const score = (slotTotal / n) * 0.85 + (1 - stretchPenalty) * 0.1 - Math.abs(shift) * 0.015 + (fStart % 4 === 0 ? 0.02 : 0) + (harmony < 0.45 ? -0.2 : 0) - missing * 0.15;
+        const score = (slotTotal / n) * 0.85 + (1 - stretchPenalty) * 0.1 - Math.abs(shift) * 0.015 + (fStart % 4 === 0 ? 0.02 : 0) + (harmony < 0.45 ? -0.2 : 0) - missing * 0.15
+          // When the user asked for both singers, prefer templates that actually give the other song a turn.
+          + (both && (tid === "duet" || tid === "duet-verse") ? 0.05 : 0);
         results.push({
           id: `${tid}:${fStart}:${shift}`,
           template: tid,
@@ -489,6 +555,8 @@ function describeCandidate(tid: TemplateId, F: PlannerSong, V: PlannerSong, fSta
     "vocal-first": "vocal from the top, a breakdown, then the hook twice",
     "call-response": "sections alternate between the two songs",
     extended: "a longer build: breakdown, hook twice, breakdown, hook twice",
+    duet: "the two singers take turns: hook, then the foundation's own vocal, and back",
+    "duet-verse": "a verse first, then the singers trade parts",
   };
   const shiftTxt = shift === 0 ? "no pitch shift" : `${V.name} shifted ${shift > 0 ? "+" : ""}${shift} st`;
   return `${F.name} from bar ${fStart + 1} under ${V.name}: ${tpl[tid]}; ${shiftTxt}; harmonic fit ${Math.round(harmony * 100)}%.`;

@@ -116,13 +116,15 @@ export function sanitizePlan(plan: PlanInput, decks: Record<DeckId, DeckState>):
 
   // Foundation stem: instrumental whenever a vocal is layered on top and we have it.
   let fStem: StemKey = plan.foundation.stem && has(plan.foundation.deck, plan.foundation.stem) ? plan.foundation.stem : "full";
-  const layeredVocals = clips.some((c) => c.mode === "layer" && vocalish(c) && c.deckId !== plan.foundation.deck);
+  const layeredVocals = clips.some((c) => c.mode === "layer" && vocalish(c));
   if (layeredVocals && HAS_VOCALS.includes(fStem)) {
     if (has(plan.foundation.deck, "instrumental")) {
       fStem = "instrumental";
-      notes.push("The foundation uses its instrumental stem so the other song's vocal is not fighting its own.");
+      notes.push("The foundation uses its instrumental stem so a layered vocal is not fighting its own.");
     } else {
-      notes.push(`Run AI stems on ${fDeck.name} to get an instrumental foundation; until then its vocal will show through under the layered hook.`);
+      // the foundation's own vocal layered over its full mix would double: swap the full mix in instead
+      for (const c of clips) if (c.mode === "layer" && c.deckId === plan.foundation.deck && c.stem === "vocals") { c.stem = "full"; c.mode = "swap"; }
+      if (clips.some((c) => c.mode === "layer" && vocalish(c))) notes.push(`Run AI stems on ${fDeck.name} to get an instrumental foundation; until then its vocal will show through under the layered hook.`);
     }
   }
 

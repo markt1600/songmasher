@@ -8,7 +8,7 @@ export const maxDuration = 60;
 
 const Deck = z.enum(["A", "B"]);
 const StemEnum = z.enum(["full", "vocals", "instrumental", "drums", "melodic"]);
-const TemplateEnum = z.enum(["classic", "vocal-first", "call-response", "extended"]);
+const TemplateEnum = z.enum(["classic", "vocal-first", "call-response", "extended", "duet", "duet-verse"]);
 
 const SongSchema = z.object({
   deck: Deck,
@@ -52,6 +52,7 @@ const ConstraintsSchema = z.object({
   energy: z.enum(["higher", "lower"]).nullable(),
   maxShift: z.number().int().min(0).max(6).nullable(),
   template: TemplateEnum.nullable(),
+  vocals: z.enum(["one", "both"]).nullable(),
 });
 
 const ResponseSchema = z.object({
@@ -79,7 +80,9 @@ You receive:
 - candidates: the planner's top arrangements, best first, with a score (0..1) and a breakdown. Each candidate lists
   its clips (label, source bars, timeline bar, stem, layer/swap mode, harmonic fit). Templates:
   classic = beat alone, hook x2, breakdown, hook; vocal-first = vocal from bar 0; call-response = the two songs
-  alternate in swap mode; extended = longer build.
+  alternate in swap mode; extended = longer build; duet / duet-verse = the two singers take turns (the other
+  song's hook, then the foundation song's own vocal in place over its own instrumental, and back). Duet templates
+  only appear when the search runs with vocals "both".
 - optionally an instruction from the user and the history of earlier instructions.
 
 Respond with:
@@ -90,7 +93,8 @@ Respond with:
 - constraints: when the user's instruction asks for something the candidates don't offer, express it as search
   constraints (e.g. "bring the vocal in earlier" -> vocalEntryBar 4 or template vocal-first; "make it longer" ->
   lengthBars; "less pitch shifting" -> maxShift 1; "more energy" -> energy higher, template classic with hookBars 8;
-  "swap the roles" -> foundation set to the other deck). Otherwise null. Unchanged fields null.
+  "swap the roles" -> foundation set to the other deck; "use both singers" / "let them trade lines" -> vocals "both";
+  "only one vocal" -> vocals "one"). Otherwise null. Unchanged fields null.
 - summary: 2-3 sentences a producer would say about the chosen plan: what sits under what, where the hook lands,
   why it works, and any caveat (e.g. one breakdown clip fits less well).
 - tips: 2-4 concrete follow-ups in the tool (levels, a filter sweep before the hook, an extra repeat, running

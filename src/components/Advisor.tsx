@@ -6,7 +6,7 @@ import type { PlanCandidate, PlanConstraints } from "@/lib/mash/planner";
 import { Icon } from "./ui";
 
 const KIND_ICON: Record<string, string> = { foundation: "anchor", tempo: "loop", key: "music", hook: "scissors", verse: "scissors", beat: "anchor", info: "check" };
-const TEMPLATE_NAME: Record<string, string> = { classic: "Classic", "vocal-first": "Vocal first", "call-response": "Call & response", extended: "Extended" };
+const TEMPLATE_NAME: Record<string, string> = { classic: "Classic", "vocal-first": "Vocal first", "call-response": "Call & response", extended: "Extended", duet: "Duet", "duet-verse": "Duet (verse first)" };
 
 function Meter({ label, value, title }: { label: string; value: number; title: string }) {
   const pct = Math.round(Math.max(0, Math.min(1, value)) * 100);
@@ -215,6 +215,13 @@ export default function Advisor() {
           {/* Refinement */}
           <div className={`flex flex-wrap items-center gap-1.5 ${claudeBusy ? "thinking-dim" : ""}`}>
             <span className="label mr-1">Adjust</span>
+            <button
+              className={`btn btn-xs ${constraints.vocals === "both" ? "text-accent-2 border-[#7c6cff]/60 bg-[#7c6cff]/15" : ""}`}
+              onClick={() => quick({ vocals: constraints.vocals === "both" ? "one" : "both" }, constraints.vocals === "both" ? "only one vocal" : "use vocals from both songs, taking turns")}
+              title="Let the two singers take turns: the other song's hook, then the foundation song's own vocal over its own instrumental. Never both at once."
+            >
+              {constraints.vocals === "both" ? "✓ Both vocals" : "Both vocals"}
+            </button>
             <button className="btn btn-xs" onClick={() => quick({ vocalEntryBar: 4 }, "bring the vocal in earlier")}>Vocal earlier</button>
             <button className="btn btn-xs" onClick={() => quick({ energy: "higher", template: "classic" }, "more energy")}>More energy</button>
             <button className="btn btn-xs" onClick={() => quick({ lengthBars: Math.max(24, (selected.lengthBars || 32) + 16) }, "make it longer")}>Longer</button>
