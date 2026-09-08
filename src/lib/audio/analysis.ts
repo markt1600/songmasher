@@ -217,8 +217,9 @@ export function analyzeSong(
   const ac = (lag: number) => (lag >= minLag && lag <= maxLag ? acf[lag] : 0);
   for (let lag = minLag; lag <= maxLag; lag++) {
     const bpm = (60 * fps) / lag;
-    // Log-gaussian preference centred at 118 BPM (Ellis-style prior)
-    const prior = Math.exp(-0.5 * Math.pow(Math.log2(bpm / 122) / 0.8, 2));
+    // Log-gaussian preference centred near 118 BPM (Ellis-style prior). Kept fairly tight: most songs
+    // sit between 80 and 150, and a broad prior let hi-hat eighths pull pop songs up to 180-200.
+    const prior = Math.exp(-0.5 * Math.pow(Math.log2(bpm / 118) / 0.6, 2));
     const half = Math.round(lag / 2);
     score[lag] = prior * (ac(lag) + 0.6 * ac(lag * 2) + 0.35 * ac(lag * 3) + 0.25 * ac(half));
   }
@@ -274,20 +275,51 @@ export function analyzeSong(
   };
   searchPeriod(bestLag * 0.97, bestLag * 1.03, 60);
   searchPeriod(bestPeriod * 0.997, bestPeriod * 1.003, 40);
-  // Octave check: if onsets land just as consistently on every half-beat, the
-  // true tempo is probably double (classic backbeat ambiguity).
+  // Octave checks. A slow result (< 90) is doubled when onsets land almost as consistently on every
+  // half-beat (classic backbeat ambiguity). A fast result (> 150) is halved when a grid of every other
+  // beat is at least as strong per beat: that is a pop song counted on its hi-hats, not a 190 BPM track.
   {
-    const doubleBpm = (60 * fps) / (bestPeriod / 2);
-    if (doubleBpm <= 185) {
+    const bpmOf = (p: number) => (60 * fps) / p;
+    const tryPeriod = (lo: number, hi: number, keepIf: (g: number, saved: number) => boolean) => {
       const savedP = bestPeriod;
       const savedPh = bestPhase;
       const savedG = bestGrid;
       bestGrid = -1;
-      searchPeriod(savedP / 2 * 0.995, savedP / 2 * 1.005, 20);
-      if (bestGrid < 0.62 * savedG) {
+      searchPeriod(lo, hi, 20);
+      if (!keepIf(bestGrid, savedG)) {
         bestPeriod = savedP;
         bestPhase = savedPh;
         bestGrid = savedG;
+      }
+    };
+    // Eighth-note hi-hats make every half-beat multiple correlate, so the comb can settle on 1.5 beats of
+    // a fast track (172 read as 115). If a grid at two thirds of the period is clearly stronger per point,
+    // that faster tempo is the real beat.
+    if (bpmOf((bestPeriod * 2) / 3) <= 190) tryPeriod(((bestPeriod * 2) / 3) * 0.995, ((bestPeriod * 2) / 3) * 1.005, (g, saved) => g >= 1.15 * saved);
+    // Doubling a slow result also needs the in-between points to be real beats, not hi-hats: the
+    // off-beat half of the current grid must carry at least 60% of the on-beat strength.
+    if (bpmOf(bestPeriod) < 90 && bpmOf(bestPeriod / 2) <= 150 && gridScore(bestPeriod, bestPhase + bestPeriod / 2) >= 0.75 * gridScore(bestPeriod, bestPhase)) {
+      tryPeriod((bestPeriod / 2) * 0.995, (bestPeriod / 2) * 1.005, (g, saved) => g >= 0.85 * saved);
+    }
+    // Halving needs a clear margin: alternate beats of a genuine fast track score only slightly higher
+    // per beat (snares vs kicks), while a pop song's real beats beat its hi-hat eighths by far more.
+    if (bpmOf(bestPeriod) > 150) {
+      const before = bestPeriod;
+      tryPeriod(bestPeriod * 2 * 0.995, bestPeriod * 2 * 1.005, (g, saved) => g >= 1.2 * saved);
+      if (bestPeriod !== before) {
+        // Of the two possible beat phases, keep the one the kicks (low band) sit on.
+        const lowGrid = (phase: number) => {
+          let t = phase;
+          let sum = 0;
+          let c = 0;
+          for (; t < nFrames; t += bestPeriod) {
+            sum += lowOnset[Math.round(t)];
+            c++;
+          }
+          return c ? sum / c : 0;
+        };
+        const alt = bestPhase + bestPeriod / 2;
+        if (lowGrid(alt) > 1.1 * lowGrid(bestPhase)) bestPhase = alt;
       }
     }
   }

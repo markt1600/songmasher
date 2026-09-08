@@ -67,6 +67,31 @@ export function runStretch(
   });
 }
 
+/** Encodes PCM channels to MP3 (CBR) off the main thread; a full song takes a few seconds. */
+export function runEncodeMp3(channels: Float32Array[], sampleRate: number, kbps: number, onProgress?: (v: number) => void): Promise<ArrayBuffer> {
+  return new Promise((resolve, reject) => {
+    const worker = new Worker(new URL("../workers/dsp.worker.ts", import.meta.url));
+    const id = nextId();
+    worker.onmessage = (e) => {
+      const msg = e.data;
+      if (msg.id !== id) return;
+      if (msg.type === "progress") onProgress?.(msg.value);
+      else if (msg.type === "result") {
+        worker.terminate();
+        resolve(msg.bytes as ArrayBuffer);
+      } else if (msg.type === "error") {
+        worker.terminate();
+        reject(new Error(msg.message));
+      }
+    };
+    worker.onerror = (e) => {
+      worker.terminate();
+      reject(new Error(e.message || "mp3 worker failed"));
+    };
+    worker.postMessage({ type: "mp3", id, channels, sampleRate, kbps }, channels.map((c) => c.buffer));
+  });
+}
+
 export function runQuickStems(
   channels: Float32Array[],
   sampleRate: number,

@@ -369,7 +369,7 @@ function SongCard({ song, cloud, match, loadedOn, confirming, onLoad, onDelete }
     <div
       className="relative min-w-0 rounded-[10px] inset px-2.5 py-2 flex flex-col gap-1.5 transition-[border-color,box-shadow] duration-150 fade-in cursor-grab active:cursor-grabbing"
       style={ring ? { borderColor: `${ring}88`, boxShadow: `0 0 0 1px ${ring}33` } : match?.grade === "poor" ? { opacity: 0.6 } : undefined}
-      title={`${song.name}${match ? `\n${GRADE_LABEL[match.grade]}: ${match.summary}` : ""}\nDrag onto a deck to load it`}
+      title={`${song.name}${match ? `\n${GRADE_LABEL[match.grade]}: ${match.summary}` : ""}${song.converted ? `\nStored as ${song.converted.kbps} kbps MP3 (converted from ${song.converted.from}, ${formatBytes(song.converted.originalSize)} → ${formatBytes(song.size)})` : ""}\nDrag onto a deck to load it`}
       onPointerDown={(e) => {
         if ((e.target as HTMLElement).closest("button")) return;
         beginDragOnMove(e, { kind: "song", id: song.id, name: song.name });

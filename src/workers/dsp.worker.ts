@@ -1,5 +1,6 @@
 import { processChannels, processChannelsFormant } from "@/lib/audio/stretch";
 import { quickStems } from "@/lib/audio/quickStems";
+import { encodeMp3 } from "@/lib/audio/mp3";
 
 interface WorkerScope {
   onmessage: ((e: MessageEvent) => void) | null;
@@ -9,7 +10,8 @@ const ctx = self as unknown as WorkerScope;
 
 export type DspRequest =
   | { type: "stretch"; id: string; channels: Float32Array[]; sampleRate: number; ratio: number; semitones: number; preserveFormants?: boolean }
-  | { type: "quickStems"; id: string; channels: Float32Array[]; sampleRate: number };
+  | { type: "quickStems"; id: string; channels: Float32Array[]; sampleRate: number }
+  | { type: "mp3"; id: string; channels: Float32Array[]; sampleRate: number; kbps: number };
 
 ctx.onmessage = (e: MessageEvent<DspRequest>) => {
   const msg = e.data;
@@ -24,6 +26,9 @@ ctx.onmessage = (e: MessageEvent<DspRequest>) => {
       // subarray views share a buffer; copy so we can transfer cleanly
       const copies = out.map((c) => c.slice());
       ctx.postMessage({ type: "result", id: msg.id, channels: copies }, copies.map((c) => c.buffer));
+    } else if (msg.type === "mp3") {
+      const blob = encodeMp3(msg.channels, msg.sampleRate, msg.kbps, (v) => ctx.postMessage({ type: "progress", id: msg.id, value: v }));
+      void blob.arrayBuffer().then((bytes) => ctx.postMessage({ type: "result", id: msg.id, bytes }, [bytes]));
     } else if (msg.type === "quickStems") {
       const res = quickStems(msg.channels, msg.sampleRate);
       const all = [...res.instrumental, ...res.vocals];

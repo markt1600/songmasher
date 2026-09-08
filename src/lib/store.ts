@@ -6,7 +6,7 @@ import { audioBufferToChannels, channelsToAudioBuffer } from "./audio/wav";
 import { firstOnsetOffset, stemLagSamples } from "./audio/align";
 import { decodeArrayBuffer, decodeFile, getAudioContext, toMono } from "./engine/context";
 import { Engine, type EngineDecks } from "./engine/engine";
-import { runAnalysis, runQuickStems, runSections, runVocalProfile } from "./workers";
+import { runAnalysis, runEncodeMp3, runQuickStems, runSections, runVocalProfile } from "./workers";
 import { CLIP_LANES, emptyAutomation, type AutomationPoint, type Clip, type CuePoint, type DeckId, type DeckState, type DemucsVariant, type Foundation, type LoopRegion, type Project, type StemKey, type TransportOptions } from "./types";
 import { playWindow } from "./engine/engine";
 import { computeSuggestions, type Suggestion, type SuggestionAction } from "./advisor";
@@ -361,25 +361,54 @@ export const useStore = create<Store>((set, get) => {
     done: "Ready",
   };
 
-  /** Returns the library record for a file, analysing and storing it on first sight. */
-  const ensureInLibrary = async (file: File, onProgress: (label: string, value: number) => void): Promise<LibrarySong> => {
+  /** Lossless uploads (FLAC, WAV, AIFF) are re-encoded to MP3 at this rate: a fraction of the size, transparent for mixing. */
+  const STORE_KBPS = 320;
+  const isLossless = (name: string, mime: string) => /\.(flac|wav|wave|aif|aiff)$/i.test(name) || /^audio\/(flac|x-flac|wav|x-wav|wave|vnd\.wave|aiff|x-aiff)$/i.test(mime);
+  const losslessLabel = (name: string, mime: string) => (/\.flac$|flac/i.test(name + mime) ? "FLAC" : /aif/i.test(name + mime) ? "AIFF" : "WAV");
+
+  /** Encodes a decoded buffer to an MP3 file in a worker. */
+  const encodeToMp3 = async (buffer: AudioBuffer, baseName: string, onProgress: (v: number) => void): Promise<File> => {
+    const channels: Float32Array[] = [];
+    for (let c = 0; c < Math.min(2, buffer.numberOfChannels); c++) channels.push(buffer.getChannelData(c).slice());
+    const bytes = await runEncodeMp3(channels, buffer.sampleRate, STORE_KBPS, onProgress);
+    return new File([bytes], `${baseName}.mp3`, { type: "audio/mpeg" });
+  };
+
+  /**
+   * Returns the library record for a file, analysing and storing it on first sight, plus the file the
+   * library actually holds (an MP3 when a lossless upload was converted). Decks must decode that stored
+   * file, not the upload, so the beat grid and the audio always agree.
+   */
+  const ensureInLibrary = async (file: File, onProgress: (label: string, value: number) => void): Promise<{ song: LibrarySong; file: File }> => {
     const data = await file.arrayBuffer();
     const id = await lib.hashFile(data, file);
     const existing = await lib.getSong(id);
     if (existing) {
       await lib.updateSong(id, { lastUsedAt: Date.now() });
-      return existing;
+      const stored = await lib.getFile(`${id}:full`);
+      return { song: existing, file: stored ? new File([stored], existing.fileName, { type: existing.mimeType }) : file };
     }
     onProgress("Decoding audio", 0.02);
-    const buffer = await decodeArrayBuffer(data);
+    let buffer = await decodeArrayBuffer(data);
+    let stored = file;
+    let converted: LibrarySong["converted"];
+    const baseName = file.name.replace(/\.[^.]+$/, "");
+    if (isLossless(file.name, file.type)) {
+      const from = losslessLabel(file.name, file.type);
+      onProgress(`Converting ${from} to MP3 (${STORE_KBPS} kbps)`, 0.03);
+      stored = await encodeToMp3(buffer, baseName, (v) => onProgress(`Converting ${from} to MP3 (${STORE_KBPS} kbps)`, 0.03 + v * 0.02));
+      // Analyse what will actually be played back, so the grid sits on the MP3's own timing.
+      buffer = await decodeArrayBuffer(await stored.arrayBuffer());
+      converted = { from, originalSize: file.size, kbps: STORE_KBPS };
+    }
     onProgress("Listening for the beat", 0.05);
     const analysis = await runAnalysis(toMono(buffer), buffer.sampleRate, (p) => onProgress(PROGRESS_LABELS[p.stage] ?? p.stage, p.value));
     const song: LibrarySong = {
       id,
-      name: file.name.replace(/\.[^.]+$/, ""),
-      fileName: file.name,
-      mimeType: file.type || "audio/mpeg",
-      size: file.size,
+      name: baseName,
+      fileName: stored.name,
+      mimeType: stored.type || "audio/mpeg",
+      size: stored.size,
       addedAt: Date.now(),
       lastUsedAt: Date.now(),
       duration: buffer.duration,
@@ -390,16 +419,56 @@ export const useStore = create<Store>((set, get) => {
       semitones: 0,
       stemSource: "none",
       aiStems: [],
+      ...(converted ? { converted } : {}),
     };
     try {
-      await lib.putFile(`${id}:full`, new Blob([data], { type: song.mimeType }));
+      await lib.putFile(`${id}:full`, stored);
       await lib.putSong(song);
       void lib.requestPersistence();
     } catch (err) {
       console.warn("Library save failed", err);
     }
     if (get().config.cloud) void syncSongToCloud(song);
-    return song;
+    return { song, file: stored };
+  };
+
+  /** Shifts every channel by `lag` samples (positive = later), padding with silence. */
+  const shiftBuffer = (b: AudioBuffer, lag: number): AudioBuffer => {
+    const out = getAudioContext().createBuffer(b.numberOfChannels, b.length, b.sampleRate);
+    for (let c = 0; c < b.numberOfChannels; c++) {
+      const src = b.getChannelData(c);
+      const dst = out.getChannelData(c);
+      if (lag > 0) dst.set(src.subarray(0, src.length - lag), lag);
+      else dst.set(src.subarray(-lag), 0);
+    }
+    return out;
+  };
+
+  /**
+   * Re-encodes a song already stored losslessly to MP3 (older imports), keeping its grid, sections and
+   * stems valid: the MP3 is lined up against the original by cross-correlation and the record's downbeat
+   * moves by that lag. A deck holding the song is switched over in place.
+   */
+  const convertStoredSong = async (song: LibrarySong, blob: Blob): Promise<Blob> => {
+    const from = losslessLabel(song.fileName, song.mimeType);
+    set({ syncing: `Converting ${song.name} from ${from} to MP3` });
+    const original = await decodeArrayBuffer(await blob.arrayBuffer());
+    const mp3 = await encodeToMp3(original, song.name, () => undefined);
+    const decoded = await decodeArrayBuffer(await mp3.arrayBuffer());
+    const lag = stemLagSamples(original.getChannelData(0), decoded.getChannelData(0), original.sampleRate);
+    const analysis = { ...song.analysis, firstDownbeat: song.analysis.firstDownbeat + lag / original.sampleRate, duration: decoded.duration };
+    await lib.putFile(`${song.id}:full`, mp3);
+    await persistSong(song.id, { fileName: mp3.name, mimeType: "audio/mpeg", size: mp3.size, analysis, converted: { from, originalSize: blob.size, kbps: STORE_KBPS } });
+    for (const deckId of ["A", "B"] as DeckId[]) {
+      const d = get().decks[deckId];
+      if (d.songId !== song.id || d.status !== "ready") continue;
+      const buffers: DeckState["buffers"] = { ...d.buffers, full: decoded };
+      // stems were cut from the original: move them by the same lag so they stay on the MP3's timing
+      if (lag !== 0) for (const k of Object.keys(buffers) as StemKey[]) if (k !== "full" && buffers[k]) buffers[k] = shiftBuffer(buffers[k]!, lag);
+      engine.invalidateDeck(deckId);
+      setDeck(deckId, { buffers, file: mp3, analysis, duration: decoded.duration });
+    }
+    return mp3;
   };
 
   /**
@@ -608,9 +677,19 @@ export const useStore = create<Store>((set, get) => {
         }
       }
       if (!blob) throw new Error(`The original audio for “${song.name}” is not on this device. Add the file again to upload it.`);
+      let fileName = song.fileName;
+      if (isLossless(song.fileName, song.mimeType) && !song.converted) {
+        // Older lossless imports: convert before the (large, slow) upload, exactly as new imports are.
+        try {
+          blob = await convertStoredSong(song, blob);
+          fileName = `${song.name}.mp3`;
+        } catch (err) {
+          console.warn("Conversion failed; uploading the original", err);
+        }
+      }
       set({ syncing: `Uploading ${song.name}` });
       try {
-        const url = await withCode((code) => cloud.cloudUploadSong(song.id, blob, song.fileName, code));
+        const url = await withCode((code) => cloud.cloudUploadSong(song.id, blob, fileName, code));
         if (!url) throw new Error("The cloud library needs its access code before it can upload");
         // Write the cloud record first; only a song the cloud actually lists may be flagged as cloud-backed,
         // otherwise a refresh could mistake it for one deleted elsewhere and drop it locally.
@@ -1380,8 +1459,8 @@ export const useStore = create<Store>((set, get) => {
       }));
       engine.invalidateDeck(deckId);
       try {
-        const song = await ensureInLibrary(file, (label, value) => setDeck(deckId, { progressLabel: label, progress: value, status: value < 0.05 ? "decoding" : "analyzing" }));
-        await loadSongIntoDeck(deckId, song, file);
+        const { song, file: stored } = await ensureInLibrary(file, (label, value) => setDeck(deckId, { progressLabel: label, progress: value, status: value < 0.05 ? "decoding" : "analyzing" }));
+        await loadSongIntoDeck(deckId, song, stored);
       } catch (err) {
         setDeck(deckId, { status: "error", error: (err as Error).message || "Could not decode this file" });
       }

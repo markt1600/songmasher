@@ -23,7 +23,7 @@ export async function POST(request: Request): Promise<Response> {
         if (!ok) throw new Error("Unexpected upload path");
         return {
           allowedContentTypes: ["audio/*", "application/octet-stream"],
-          maximumSizeInBytes: 80 * 1024 * 1024,
+          maximumSizeInBytes: 250 * 1024 * 1024,
           addRandomSuffix: false,
           allowOverwrite: true,
           tokenPayload: JSON.stringify({}),

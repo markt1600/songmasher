@@ -38,6 +38,8 @@ export interface LibrarySong {
   pendingStems?: { id: string; variant: string; startedAt: number } | null;
   /** true when this record came from (or is synced to) the cloud library */
   cloud?: boolean;
+  /** set when a lossless upload was re-encoded to MP3 for storage */
+  converted?: { from: string; originalSize: number; kbps: number };
   /** derived from the Demucs vocal stem: phrases, per-bar vocal energy, melody chroma */
   vocal?: VocalProfile | null;
 }
