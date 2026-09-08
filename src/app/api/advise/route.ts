@@ -13,6 +13,8 @@ const TemplateEnum = z.enum(["classic", "vocal-first", "call-response", "extende
 const SongSchema = z.object({
   deck: Deck,
   name: z.string().max(200),
+  title: z.string().max(200).optional(),
+  artist: z.string().max(200).optional(),
   bpm: z.number(),
   key: z.string(),
   camelot: z.string(),
@@ -53,6 +55,8 @@ const ConstraintsSchema = z.object({
   maxShift: z.number().int().min(0).max(6).nullable(),
   template: TemplateEnum.nullable(),
   vocals: z.enum(["one", "both"]).nullable(),
+  /** a signature moment the arrangement must open with: that deck's full mix from srcBar for `bars` */
+  mustInclude: z.object({ deck: Deck, srcBar: z.number().int().min(0), bars: z.number().int().min(2).max(16), label: z.string().max(60) }).nullable(),
 });
 
 const ResponseSchema = z.object({
@@ -61,6 +65,16 @@ const ResponseSchema = z.object({
   /** search constraints derived from the user's instruction (null when no change is wanted) */
   constraints: ConstraintsSchema.nullable(),
   summary: z.string(),
+  /** what you recognised about each song from its title/artist (null when unknown) and the moments that matter */
+  knowledge: z
+    .array(
+      z.object({
+        deck: Deck,
+        recognised: z.string().max(120).nullable(),
+        moments: z.array(z.object({ what: z.string().max(80), section: z.string().max(40), startBar: z.number().int().min(0).nullable(), bars: z.number().int().min(1).max(32).nullable(), importance: z.number().int().min(1).max(3) })).max(4),
+      }),
+    )
+    .max(2),
   tips: z.array(z.string()).max(5),
   clipLabels: z.array(z.string()).max(12),
   stemAdvice: z.array(z.object({ deck: Deck, variant: z.enum(["htdemucs", "htdemucs_ft", "htdemucs_6s"]), reason: z.string() })),
@@ -99,6 +113,15 @@ Respond with:
   why it works, and any caveat (e.g. one breakdown clip fits less well).
 - tips: 2-4 concrete follow-ups in the tool (levels, a filter sweep before the hook, an extra repeat, running
   fine-tuned stems), specific to these songs.
+- knowledge: for each song, whether you recognise it from its title/artist (name the song and artist, or null) and
+  up to 4 signature moments a listener expects (an iconic intro riff, the famous opening line, the drop), each mapped
+  onto the detected sections given for that song: use the section's own startBar/bars (the songs' sections are listed
+  with bar ranges), null when you cannot place it. importance 3 = the song is not the song without it. Never invent
+  moments for songs you do not actually recognise; a cover, live version or remix may differ from the studio track.
+- If a moment of importance 3 is an intro or opening riff and the user has not asked otherwise, keep it: return
+  constraints.mustInclude = { deck, srcBar (the section's start bar), bars (4-8, the riff's length), label } and say
+  so in the summary ("Opens with the bass riff of Ice Ice Baby"). Otherwise mustInclude null. When the request
+  says knowledge is off, return knowledge [] and mustInclude null.
 - clipLabels: a short evocative label per clip of the chosen candidate, in order (same count as its clips), else [].
 - stemAdvice: songs that still lack a "vocals" stem but are used for their vocal, with the Demucs variant to run
   ("htdemucs" default, "htdemucs_ft" when the vocal is the star, "htdemucs_6s" for guitar/piano). Empty otherwise.`;
@@ -109,8 +132,10 @@ export async function POST(request: Request): Promise<Response> {
   let candidates: z.infer<typeof CandidateSchema>[];
   let instruction: string | undefined;
   let history: z.infer<typeof HistorySchema> = [];
+  let useKnowledge = true;
   try {
     const body = await request.json();
+    if (body.useKnowledge === false) useKnowledge = false;
     songs = z.array(SongSchema).min(2).max(2).parse(body.songs);
     candidates = z.array(CandidateSchema).min(1).max(8).parse(body.candidates);
     instruction = typeof body.instruction === "string" ? body.instruction.slice(0, 2000) : undefined;
@@ -122,7 +147,7 @@ export async function POST(request: Request): Promise<Response> {
   const messages: Anthropic.MessageParam[] = [
     {
       role: "user",
-      content: `Songs:\n${JSON.stringify(songs)}\n\nCandidates (best first):\n${JSON.stringify(candidates)}`,
+      content: `Songs:\n${JSON.stringify(songs)}\n\nCandidates (best first):\n${JSON.stringify(candidates)}${useKnowledge ? "" : "\n\nSong knowledge is OFF for this plan: do not use what you know about these songs; knowledge [] and mustInclude null."}`,
     },
   ];
   for (const h of history) {

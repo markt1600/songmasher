@@ -40,6 +40,9 @@ export interface LibrarySong {
   cloud?: boolean;
   /** set when a lossless upload was re-encoded to MP3 for storage */
   converted?: { from: string; originalSize: number; kbps: number };
+  /** from the file's own tags, or edited by hand; used for display and so the advisor can recognise the song */
+  title?: string;
+  artist?: string;
   /** derived from the Demucs vocal stem: phrases, per-bar vocal energy, melody chroma */
   vocal?: VocalProfile | null;
 }
@@ -306,4 +309,10 @@ export function isStorageError(err: unknown): boolean {
   const name = (err as { name?: string } | null)?.name ?? "";
   const msg = String((err as Error)?.message ?? err);
   return /QuotaExceeded|aborted|storage may be full|NotAllowed|InvalidState|UnknownError/i.test(name + " " + msg);
+}
+
+/** "Artist – Title" when tags are known, else the file-derived name. */
+export function displayName(song: Pick<LibrarySong, "name" | "title" | "artist">): string {
+  if (song.title && song.artist) return `${song.artist} – ${song.title}`;
+  return song.title || song.name;
 }

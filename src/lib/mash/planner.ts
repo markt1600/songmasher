@@ -28,13 +28,20 @@ export interface PlanConstraints {
   /** max |semitones| allowed for the pitch shift */
   maxShift?: number;
   template?: TemplateId;
+  /**
+   * A signature moment the arrangement must open with (from the advisor's knowledge of the song, e.g. an
+   * iconic intro riff): the deck's full mix from srcBar for `bars`, swapped in before the vocal enters.
+   */
+  mustInclude?: { deck: DeckId; srcBar: number; bars: number; label?: string };
+  /** false: the advisor should not use what it knows about the songs (no signature moments) */
+  knowledge?: boolean;
   /** "both": the foundation song's own vocal takes turns with the other song's (duet templates) */
   vocals?: "one" | "both";
 }
 
 export type TemplateId = "classic" | "vocal-first" | "call-response" | "extended" | "duet" | "duet-verse";
 /** fvocal = the foundation song's own singing, in place over its own instrumental */
-type SlotKind = "hook" | "verse" | "swap" | "fvocal";
+type SlotKind = "hook" | "verse" | "swap" | "fvocal" | "feature";
 interface Slot {
   kind: SlotKind;
   startBar: number; // timeline
@@ -260,16 +267,18 @@ export function vocalSegments(song: PlannerSong, bars: number): VocalSegment[] {
 // Templates
 // ---------------------------------------------------------------------------
 
-function template(id: TemplateId, c: PlanConstraints, availableBars: number): { slots: Slot[]; length: number; hook: number } {
+function template(id: TemplateId, c: PlanConstraints, availableBars: number, lead = 0): { slots: Slot[]; length: number; hook: number } {
   // Short songs get shorter hooks and a shorter entry so the arrangement still fits.
   const hook = c.hookBars ?? (availableBars < 40 ? 4 : 8);
-  const entry = c.vocalEntryBar ?? (id === "vocal-first" ? 0 : availableBars < 40 ? 4 : 8);
+  const entry = (c.vocalEntryBar ?? (id === "vocal-first" ? 0 : availableBars < 40 ? 4 : 8)) + lead;
   const slots: Slot[] = [];
   let t = entry;
   const push = (kind: SlotKind, bars: number) => {
     slots.push({ kind, startBar: t, bars });
     t += bars;
   };
+  // A signature opening (the advisor's "keep the iconic intro") comes first, before the entry gap.
+  if (lead > 0) slots.unshift({ kind: "feature", startBar: 0, bars: lead });
   switch (id) {
     case "classic":
       push("hook", hook);
@@ -395,9 +404,17 @@ export function planMashup(songs: [PlannerSong, PlannerSong], constraints: PlanC
     fStarts.push(b);
   }
   if (fStarts.length === 0) fStarts.push(0);
+  // A signature opening: when it belongs to the foundation song, the foundation simply starts there and
+  // the vocal waits; when it belongs to the other song, its full mix opens the arrangement as a swap.
+  const feature = constraints.knowledge === false ? undefined : constraints.mustInclude;
+  const lead = feature ? Math.max(2, Math.min(16, Math.round(feature.bars))) : 0;
+  if (feature && feature.deck === F.deck) {
+    fStarts.length = 0;
+    fStarts.push(Math.max(0, Math.min(fa.totalBars - 8, Math.round(feature.srcBar))));
+  }
 
   for (const tid of templates) {
-    const { slots, length: tplLength, hook } = template(tid, constraints, fa.totalBars);
+    const { slots, length: tplLength, hook } = template(tid, constraints, fa.totalBars, lead);
     if (slots.length === 0) continue;
     for (let shift = -maxShift; shift <= maxShift; shift++) {
       for (const fStart of fStarts) {
@@ -418,6 +435,15 @@ export function planMashup(songs: [PlannerSong, PlannerSong], constraints: PlanC
           const slotStart = cursor;
           if (fStart + slotStart + 2 > fa.totalBars) break;
           placed++;
+          if (slot.kind === "feature") {
+            if (feature && feature.deck === V.deck) {
+              const srcBar = Math.max(0, Math.min(va.totalBars - slot.bars, Math.round(feature.srcBar)));
+              clips.push({ deck: V.deck, stem: "full", srcBar, lengthBeats: slot.bars * 4, startBeat: slotStart * 4, lane: 2, mode: "swap", label: feature.label ?? "Signature opening", fit: 1, slotBars: slot.bars, fadeIn: 0, fadeOut: 0.5 });
+            }
+            // (for the foundation's own opening the foundation itself plays it: nothing to add)
+            cursor += slot.bars;
+            continue;
+          }
           if (slot.kind === "fvocal") {
             // The foundation song sings its own part, exactly where it sits over its own instrumental.
             const alignedBar = fStart + slotStart;
@@ -549,7 +575,7 @@ export function planMashup(songs: [PlannerSong, PlannerSong], constraints: PlanC
           clips,
           score,
           breakdown: { harmony, phrases, energy: energyFit, stretch: 1 - stretchPenalty },
-          description: describeCandidate(tid, F, V, fStart, shift, harmony),
+          description: (feature ? `Opens with ${feature.label ?? "the signature intro"} of ${feature.deck === F.deck ? F.name : V.name}; then ` : "") + describeCandidate(tid, F, V, fStart, shift, harmony),
         });
       }
     }

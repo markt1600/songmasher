@@ -7,7 +7,7 @@ import { Icon } from "./ui";
 
 const KIND_ICON: Record<string, string> = { foundation: "anchor", tempo: "loop", key: "music", hook: "scissors", verse: "scissors", beat: "anchor", info: "check" };
 /** Every constraint explicitly cleared: the planner falls back to its own choices. */
-const RESET: PlanConstraints = { foundation: undefined, lengthBars: undefined, vocalEntryBar: undefined, hookBars: undefined, energy: undefined, maxShift: undefined, template: undefined, vocals: undefined };
+const RESET: PlanConstraints = { foundation: undefined, lengthBars: undefined, vocalEntryBar: undefined, hookBars: undefined, energy: undefined, maxShift: undefined, template: undefined, vocals: undefined, mustInclude: undefined, knowledge: undefined };
 
 /** An adjust chip that stays lit while its constraint is active; clicking again clears it. */
 function Chip({ on, title, onClick, children }: { on: boolean; title?: string; onClick: () => void; children: ReactNode }) {
@@ -139,6 +139,26 @@ export default function Advisor() {
           </div>
 
           <p className={`text-sm leading-relaxed ${claudeBusy ? "thinking-dim" : ""}`}>{claudeNotes?.choice === selected.id ? claudeNotes.summary : selected.description}</p>
+          {claudeNotes?.choice === selected.id && claudeNotes.knowledge && claudeNotes.knowledge.some((k) => k.recognised) && (
+            <div className={`flex flex-col gap-1 text-[12px] text-text-2 ${claudeBusy ? "thinking-dim" : ""}`} data-knowledge>
+              {claudeNotes.knowledge
+                .filter((k) => k.recognised)
+                .map((k) => (
+                  <div key={k.deck} className="flex flex-wrap items-baseline gap-x-2 gap-y-0.5">
+                    <span className="font-bold" style={{ color: DECK_COLORS[k.deck].main }}>
+                      {k.deck}
+                    </span>
+                    <span className="text-text">{k.recognised}</span>
+                    {k.moments.slice(0, 3).map((m, i) => (
+                      <span key={i} className="chip" title={`${m.section}${m.startBar !== null ? ` · bar ${m.startBar + 1}` : ""}${m.bars ? ` · ${m.bars} bars` : ""} · importance ${m.importance}/3`}>
+                        {m.importance >= 3 ? "★ " : ""}
+                        {m.what}
+                      </span>
+                    ))}
+                  </div>
+                ))}
+            </div>
+          )}
 
           <div className={`overflow-x-auto ${claudeBusy ? "thinking-dim" : ""}`}>
             <table className="text-[0.72rem] w-full">
@@ -248,6 +268,15 @@ export default function Advisor() {
             <Chip on={constraints.foundation !== undefined} title={constraints.foundation ? `Beat pinned to ${decks[constraints.foundation].name}` : "Swap which song carries the beat"} onClick={() => (constraints.foundation ? quick({ foundation: undefined }, "let the planner choose which song carries the beat") : quick({ foundation: selected.vocalDeck }, "swap the roles of the two songs"))}>
               Swap roles
             </Chip>
+            {config.ai && (
+              <Chip
+                on={constraints.knowledge !== false}
+                title="Let Claude use what it knows about these songs (by title and artist): keep an iconic intro, favour the famous line. Off: plan from the audio analysis alone."
+                onClick={() => (constraints.knowledge === false ? quick({ knowledge: true }, "use what you know about these songs again") : quick({ knowledge: false, mustInclude: undefined }, "ignore what you know about these songs; plan from the audio alone"))}
+              >
+                Song knowledge
+              </Chip>
+            )}
             <Chip on={constraints.maxShift === 0} onClick={() => (constraints.maxShift === 0 ? quick({ maxShift: undefined }, "pitch shifting allowed again") : quick({ maxShift: 0 }, "no pitch shifting"))}>
               No pitch shift
             </Chip>

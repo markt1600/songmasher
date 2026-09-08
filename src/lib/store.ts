@@ -4,6 +4,7 @@ import { barToTime, type SongAnalysis } from "./audio/analysis";
 import { vocalProfileMatches } from "./audio/vocal";
 import { audioBufferToChannels, channelsToAudioBuffer } from "./audio/wav";
 import { firstOnsetOffset, stemLagSamples } from "./audio/align";
+import { readAudioTags } from "./audio/tags";
 import { decodeArrayBuffer, decodeFile, getAudioContext, toMono } from "./engine/context";
 import { Engine, type EngineDecks } from "./engine/engine";
 import { runAnalysis, runEncodeMp3, runQuickStems, runSections, runVocalProfile } from "./workers";
@@ -132,6 +133,8 @@ export interface ClaudeNotes {
   tips: string[];
   clipLabels: string[];
   stemAdvice: { deck: DeckId; variant: DemucsVariant; reason: string }[];
+  /** what the advisor recognised about each song and the moments it considers signature */
+  knowledge?: { deck: DeckId; recognised: string | null; moments: { what: string; section: string; startBar: number | null; bars: number | null; importance: number }[] }[];
   choice: string | null;
 }
 
@@ -204,6 +207,8 @@ interface Store {
   setMasterBpm: (bpm: number) => void;
   adoptDeckTempo: (deckId: DeckId) => void;
   nudgeDownbeat: (deckId: DeckId, beats: number) => void;
+  /** edit a song's title/artist tags (display name, and what the advisor is told) */
+  updateSongMeta: (id: string, meta: { title?: string; artist?: string }) => Promise<void>;
   /** run tempo, downbeat and key detection again on a loaded song (after an algorithm update, or a bad reading) */
   reanalyze: (deckId: DeckId) => Promise<void>;
   nudgeGridMs: (deckId: DeckId, ms: number) => void;
@@ -390,6 +395,7 @@ export const useStore = create<Store>((set, get) => {
       const stored = await lib.getFile(`${id}:full`);
       return { song: existing, file: stored ? new File([stored], existing.fileName, { type: existing.mimeType }) : file };
     }
+    const tags = readAudioTags(data);
     onProgress("Decoding audio", 0.02);
     let buffer = await decodeArrayBuffer(data);
     let stored = file;
@@ -422,6 +428,8 @@ export const useStore = create<Store>((set, get) => {
       stemSource: "none",
       aiStems: [],
       ...(converted ? { converted } : {}),
+      ...(tags?.title ? { title: tags.title } : {}),
+      ...(tags?.artist ? { artist: tags.artist } : {}),
     };
     // The file is the big write and the one that fails first when storage is full; keep the record
     // regardless so the song stays listed (it streams from the cloud, or asks to be added again).
@@ -847,7 +855,7 @@ export const useStore = create<Store>((set, get) => {
     set({ playing: false, previewDeck: null });
     engine.invalidateDeck(deckId);
     set((s) => ({
-      decks: { ...s.decks, [deckId]: { ...emptyDeck(deckId), songId: song.id, name: song.name, file, status: "decoding", progressLabel: "Decoding audio", progress: 0.3 } },
+      decks: { ...s.decks, [deckId]: { ...emptyDeck(deckId), songId: song.id, name: lib.displayName(song), file, status: "decoding", progressLabel: "Decoding audio", progress: 0.3 } },
     }));
     const buffer = await decodeFile(file);
     setDeck(deckId, {
@@ -1111,9 +1119,12 @@ export const useStore = create<Store>((set, get) => {
         if (!a) return null;
         const desc = describeSong(a);
         const loudest = d.vocal ? d.vocal.barVocal.map((v, i) => [v, i] as [number, number]).sort((x, y) => y[0] - x[0]).slice(0, 6).map((x) => x[1]).sort((x, y) => x - y) : [];
+        const rec = s.library.find((x) => x.id === d.songId);
         return {
           deck: id,
           name: d.name,
+          ...(rec?.title ? { title: rec.title } : {}),
+          ...(rec?.artist ? { artist: rec.artist } : {}),
           bpm: Math.round(a.bpm * 10) / 10,
           key: a.key.name,
           camelot: a.key.camelot,
@@ -1149,10 +1160,10 @@ export const useStore = create<Store>((set, get) => {
     if (cands.length === 0) throw new Error("Nothing to plan yet: load two songs first");
     const history = s.planHistory.map((h) => ({ instruction: h.instruction, summary: h.plan.summary }));
     const call = async (list: PlanCandidate[], instr?: string) => {
-      const r = await fetch("/api/advise", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ songs: songSummaries(), candidates: candidatesForClaude(list), instruction: instr, history }) });
+      const r = await fetch("/api/advise", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ songs: songSummaries(), candidates: candidatesForClaude(list), instruction: instr, history, useKnowledge: s.planConstraints.knowledge !== false }) });
       const j = await r.json();
       if (!r.ok) throw new Error(j.error ?? "Advisor failed");
-      return j.result as { choice: string | null; constraints: Partial<Record<keyof PlanConstraints, unknown>> | null; summary: string; tips: string[]; clipLabels: string[]; stemAdvice: ClaudeNotes["stemAdvice"] };
+      return j.result as { choice: string | null; constraints: Partial<Record<keyof PlanConstraints, unknown>> | null; summary: string; knowledge?: ClaudeNotes["knowledge"]; tips: string[]; clipLabels: string[]; stemAdvice: ClaudeNotes["stemAdvice"] };
     };
     let res = await call(cands, instruction);
     if (res.constraints) {
@@ -1166,7 +1177,7 @@ export const useStore = create<Store>((set, get) => {
     }
     const chosen = cands.find((c) => c.id === res.choice) ?? cands[0];
     if (!chosen) throw new Error("The planner found no workable arrangement");
-    const notes: ClaudeNotes = { summary: res.summary, tips: res.tips, clipLabels: res.clipLabels ?? [], stemAdvice: res.stemAdvice ?? [], choice: chosen.id };
+    const notes: ClaudeNotes = { summary: res.summary, tips: res.tips, clipLabels: res.clipLabels ?? [], stemAdvice: res.stemAdvice ?? [], knowledge: res.knowledge ?? [], choice: chosen.id };
     const plan = candidateToPlan(chosen, notes.clipLabels.length === chosen.clips.length ? notes.clipLabels : undefined);
     plan.summary = res.summary;
     plan.tips = res.tips;
@@ -1608,6 +1619,15 @@ export const useStore = create<Store>((set, get) => {
     adoptDeckTempo: (deckId) => {
       const a = get().decks[deckId].analysis;
       if (a) get().setMasterBpm(a.bpm);
+    },
+
+    updateSongMeta: async (id, meta) => {
+      const title = meta.title?.trim() || undefined;
+      const artist = meta.artist?.trim() || undefined;
+      const next = await persistSong(id, { title, artist });
+      if (!next) return;
+      const name = lib.displayName(next);
+      for (const d of ["A", "B"] as DeckId[]) if (get().decks[d].songId === id) setDeck(d, { name });
     },
 
     reanalyze: async (deckId) => {

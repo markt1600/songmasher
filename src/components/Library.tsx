@@ -1,7 +1,7 @@
 "use client";
 import { useMemo, useRef, useState } from "react";
 import { useStore } from "@/lib/store";
-import { formatBytes, type LibraryMix, type LibraryProject, type LibrarySong } from "@/lib/library";
+import { displayName, formatBytes, type LibraryMix, type LibraryProject, type LibrarySong } from "@/lib/library";
 import { GRADE_COLOR, GRADE_LABEL, matchSongs, type MatchInfo } from "@/lib/match";
 import { DECK_COLORS, type DeckId } from "@/lib/types";
 import { Icon } from "./ui";
@@ -40,7 +40,7 @@ export default function Library() {
   const syncing = useStore((s) => s.syncing);
   const cloudBytes = useStore((s) => s.cloudBytes);
   const cloudError = useStore((s) => s.cloudError);
-  const { importFiles, loadFromLibrary, deleteFromLibrary, changeAccessCode, refreshLibrary, openProject, renameProject, deleteProject, deleteMix, shareLink, playMix, showToast } = useStore();
+  const { importFiles, loadFromLibrary, deleteFromLibrary, changeAccessCode, refreshLibrary, openProject, renameProject, deleteProject, deleteMix, shareLink, playMix, showToast, updateSongMeta } = useStore();
   const projects = useStore((s) => s.projects);
   const mixes = useStore((s) => s.mixes);
   const currentProject = useStore((s) => s.currentProject);
@@ -70,7 +70,7 @@ export default function Library() {
 
   const songs = useMemo(() => {
     const q = query.trim().toLowerCase();
-    const list = q ? library.filter((x) => x.name.toLowerCase().includes(q) || x.keyName.toLowerCase().includes(q) || x.camelot.toLowerCase() === q) : [...library];
+    const list = q ? library.filter((x) => `${x.name} ${x.title ?? ""} ${x.artist ?? ""}`.toLowerCase().includes(q) || x.keyName.toLowerCase().includes(q) || x.camelot.toLowerCase() === q) : [...library];
     if (effectiveSort === "name") list.sort((a, b) => a.name.localeCompare(b.name, undefined, { numeric: true, sensitivity: "base" }));
     else if (effectiveSort === "bpm") list.sort((a, b) => a.bpm - b.bpm);
     else if (effectiveSort === "match") list.sort((a, b) => (a.id === refSongId ? -1 : b.id === refSongId ? 1 : (matches.get(b.id)?.score ?? -1) - (matches.get(a.id)?.score ?? -1) || b.addedAt - a.addedAt));
@@ -201,6 +201,7 @@ export default function Library() {
               cloud={config.cloud}
               match={matches.get(song.id) ?? null}
               loadedOn={loadedOn(song.id)}
+              onEdit={(meta) => void updateSongMeta(song.id, meta)}
               confirming={confirmId === song.id}
               onLoad={(deck) => void loadFromLibrary(deck, song.id)}
               onDelete={() => {
@@ -365,28 +366,58 @@ function MixCard({ m, link, onPlay, onShare, onDelete }: { m: LibraryMix; link: 
   );
 }
 
-function SongCard({ song, cloud, match, loadedOn, confirming, onLoad, onDelete }: { song: LibrarySong; cloud: boolean; match: MatchInfo | null; loadedOn: DeckId | null; confirming: boolean; onLoad: (deck: DeckId) => void; onDelete: () => void }) {
+function SongCard({ song, cloud, match, loadedOn, confirming, onLoad, onDelete, onEdit }: { song: LibrarySong; cloud: boolean; match: MatchInfo | null; loadedOn: DeckId | null; confirming: boolean; onLoad: (deck: DeckId) => void; onDelete: () => void; onEdit: (meta: { title: string; artist: string }) => void }) {
+  const [editing, setEditing] = useState<{ title: string; artist: string } | null>(null);
+  const shown = displayName(song);
   const great = !loadedOn && match?.grade === "great";
   const ring = loadedOn ? DECK_COLORS[loadedOn].main : great ? GRADE_COLOR.great : undefined;
   const synced = !!song.fileUrl;
   const ai = song.stemSource === "ai" && song.aiStems.length > 0;
   return (
     <div
-      className="relative min-w-0 rounded-[10px] inset px-2.5 py-2 flex flex-col gap-1.5 transition-[border-color,box-shadow] duration-150 fade-in cursor-grab active:cursor-grabbing"
+      className="group relative min-w-0 rounded-[10px] inset px-2.5 py-2 flex flex-col gap-1.5 transition-[border-color,box-shadow] duration-150 fade-in cursor-grab active:cursor-grabbing"
       style={ring ? { borderColor: `${ring}88`, boxShadow: `0 0 0 1px ${ring}33` } : match?.grade === "poor" ? { opacity: 0.6 } : undefined}
-      title={`${song.name}${match ? `\n${GRADE_LABEL[match.grade]}: ${match.summary}` : ""}${song.converted ? `\nStored as ${song.converted.kbps} kbps MP3 (converted from ${song.converted.from}, ${formatBytes(song.converted.originalSize)} → ${formatBytes(song.size)})` : ""}\nDrag onto a deck to load it`}
+      title={`${shown}${song.title || song.artist ? `\nFile: ${song.name}` : ""}${match ? `\n${GRADE_LABEL[match.grade]}: ${match.summary}` : ""}${song.converted ? `\nStored as ${song.converted.kbps} kbps MP3 (converted from ${song.converted.from}, ${formatBytes(song.converted.originalSize)} → ${formatBytes(song.size)})` : ""}\nDrag onto a deck to load it · double-click the name to edit title and artist`}
       onPointerDown={(e) => {
-        if ((e.target as HTMLElement).closest("button")) return;
-        beginDragOnMove(e, { kind: "song", id: song.id, name: song.name });
+        if ((e.target as HTMLElement).closest("button, input")) return;
+        beginDragOnMove(e, { kind: "song", id: song.id, name: shown });
       }}
     >
+      {editing ? (
+        <form
+          className="flex flex-col gap-1"
+          onSubmit={(e) => {
+            e.preventDefault();
+            onEdit(editing);
+            setEditing(null);
+          }}
+          onKeyDown={(e) => e.key === "Escape" && setEditing(null)}
+        >
+          <input className="h-[22px] rounded-[6px] border border-white/[0.14] bg-black/30 px-2 text-[12px] outline-none focus:border-[#7c6cff]" placeholder="Title" value={editing.title} onChange={(e) => setEditing({ ...editing, title: e.target.value })} autoFocus aria-label="Title" />
+          <input className="h-[22px] rounded-[6px] border border-white/[0.14] bg-black/30 px-2 text-[12px] outline-none focus:border-[#7c6cff]" placeholder="Artist" value={editing.artist} onChange={(e) => setEditing({ ...editing, artist: e.target.value })} aria-label="Artist" />
+          <div className="flex items-center gap-1.5 justify-end">
+            <button type="button" className="btn btn-xs btn-ghost !h-[20px]" onClick={() => setEditing(null)}>
+              Cancel
+            </button>
+            <button type="submit" className="btn btn-xs btn-primary !h-[20px]">
+              Save
+            </button>
+          </div>
+        </form>
+      ) : (
+      <>
       <div className="flex items-center gap-1.5 min-w-0">
         {loadedOn && (
           <span className="text-[9.5px] font-bold h-4 w-4 rounded-[5px] grid place-items-center text-black shrink-0" style={{ background: ring }}>
             {loadedOn}
           </span>
         )}
-        <div className="text-[12.5px] font-semibold truncate tracking-[-0.01em] flex-1 min-w-0">{song.name}</div>
+        <div className="text-[12.5px] font-semibold truncate tracking-[-0.01em] flex-1 min-w-0" onDoubleClick={() => setEditing({ title: song.title ?? "", artist: song.artist ?? "" })}>
+          {shown}
+        </div>
+        <button className="shrink-0 text-muted hover:text-text opacity-0 group-hover:opacity-100 transition-opacity" onClick={() => setEditing({ title: song.title ?? "", artist: song.artist ?? "" })} title="Edit title and artist" aria-label="Edit title and artist">
+          <Icon name="wand" size={10} />
+        </button>
         {match && !loadedOn && (
           <span className="shrink-0 inline-flex items-center gap-1 text-[9.5px] font-medium rounded-full px-1.5 h-[15px]" style={{ color: GRADE_COLOR[match.grade], background: `${GRADE_COLOR[match.grade]}1f` }} title={`${GRADE_LABEL[match.grade]}: ${match.summary}`} data-match={match.grade}>
             <span className="h-[5px] w-[5px] rounded-full" style={{ background: GRADE_COLOR[match.grade] }} />
@@ -418,6 +449,8 @@ function SongCard({ song, cloud, match, loadedOn, confirming, onLoad, onDelete }
           {confirming ? "Delete?" : <Icon name="trash" size={10} />}
         </button>
       </div>
+      </>
+      )}
     </div>
   );
 }
