@@ -120,6 +120,11 @@ export default function Library() {
             <Icon name="cloud" size={10} /> Cloud
           </span>
         )}
+        {storage && storage.quota > 0 && storage.usage / storage.quota > 0.85 && (
+          <span className="chip text-warn border-warn/40" title={`This browser's local storage is ${Math.round((100 * storage.usage) / storage.quota)}% full (${formatBytes(storage.usage)} of ${formatBytes(storage.quota)}). Songs still play, streaming from the cloud when they cannot be cached; lossless files are being converted to MP3 to free space. Deleting songs you no longer need also helps.`}>
+            Local storage {Math.round((100 * storage.usage) / storage.quota)}% full
+          </span>
+        )}
         {refDeck && matches.size > 0 && (
           <span className="chip hidden sm:inline-flex" title="Each song is judged against the song on this deck: same, relative or neighbouring keys score highest (small pitch shifts are allowed), and tempos that need little stretching, including half and double time.">
             <span className="h-[7px] w-[7px] rounded-full" style={{ background: DECK_COLORS[refDeck].main }} /> Matches for {refDeck} · {decks[refDeck].name}

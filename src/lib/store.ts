@@ -446,6 +446,46 @@ export const useStore = create<Store>((set, get) => {
     return out;
   };
 
+  const refreshStorage = async () => {
+    const storage = await lib.storageEstimate().catch(() => null);
+    if (storage) set({ storage });
+  };
+
+  /** Converts older lossless imports one at a time in the background, freeing local and cloud space. */
+  let convertingLossless = false;
+  const convertStoredLossless = async (songs: LibrarySong[]) => {
+    if (convertingLossless) return;
+    convertingLossless = true;
+    try {
+      for (const song of songs) {
+        if (song.converted || !isLossless(song.fileName, song.mimeType)) continue;
+        const busy = (["A", "B"] as DeckId[]).some((d) => ["decoding", "analyzing"].includes(get().decks[d].status) || get().decks[d].stemBusy);
+        if (busy) break; // leave the CPU to the user's work; the next refresh tries again
+        const blob = await lib.getFile(`${song.id}:full`).catch(() => undefined);
+        if (!blob) continue;
+        try {
+          await convertStoredSong(song, blob);
+          if (get().config.cloud && song.fileUrl) {
+            // replace the cloud copy too, so the next device downloads the small file
+            const fresh = (await lib.getSong(song.id)) ?? song;
+            const mp3 = await lib.getFile(`${song.id}:full`);
+            if (mp3) {
+              const url = await withCode((code) => cloud.cloudUploadSong(song.id, mp3, `${song.name}.mp3`, code));
+              if (url) await persistSong(song.id, { fileUrl: url, size: mp3.size, fileName: fresh.fileName, mimeType: "audio/mpeg" }, true);
+            }
+          }
+        } catch (err) {
+          console.warn(`Could not convert ${song.name}`, err);
+        } finally {
+          set({ syncing: null });
+          void refreshStorage();
+        }
+      }
+    } finally {
+      convertingLossless = false;
+    }
+  };
+
   /**
    * Re-encodes a song already stored losslessly to MP3 (older imports), keeping its grid, sections and
    * stems valid: the MP3 is lined up against the original by cross-correlation and the record's downbeat
@@ -1214,7 +1254,7 @@ export const useStore = create<Store>((set, get) => {
         if (r) {
           remoteById.delete(l.id);
           const { next, localNewer } = lib.mergeSongRecords(l, r);
-          await lib.putSong(next);
+          await lib.putSong(next).catch((err) => console.warn("Local record write failed", err));
           const stemsChanged = (next.aiStems?.length ?? 0) !== (r.aiStems?.length ?? 0) || Object.keys(next.stemUrls ?? {}).length !== Object.keys(r.stemUrls ?? {}).length;
           if (localNewer || stemsChanged) scheduleCloudMeta(next);
           // Stems separated here but never uploaded (a closed tab mid-sync): push them now.
@@ -1230,12 +1270,13 @@ export const useStore = create<Store>((set, get) => {
         }
       }
       for (const r of remoteById.values()) {
-        await lib.putSong(r);
+        await lib.putSong(r).catch((err) => console.warn("Local record write failed", err));
         merged.push(r);
       }
       merged.sort((a, b) => b.lastUsedAt - a.lastUsedAt);
       set({ library: merged, cloudBytes: remote.bytes });
       for (const song of toUpload) void syncSongToCloud(song);
+      void convertStoredLossless(merged);
     },
 
     importFiles: async (files) => {
@@ -1258,33 +1299,51 @@ export const useStore = create<Store>((set, get) => {
     },
 
     loadFromLibrary: async (deckId, id) => {
-      const song = await lib.getSong(id);
+      // The card may come from the cloud listing while the local store could not keep the record
+      // (a full IndexedDB, typically after large lossless files): use the listing's copy and stream.
+      let song = await lib.getSong(id).catch(() => undefined);
+      if (!song) {
+        const listed = get().library.find((x) => x.id === id);
+        if (listed) {
+          song = listed;
+          try {
+            await lib.putSong(listed);
+          } catch (err) {
+            console.warn("Could not store the song record locally", err);
+          }
+        }
+      }
       if (!song) {
         get().showToast("That song is no longer in the library");
         await get().refreshLibrary();
         return;
       }
-      let blob = await lib.getFile(`${id}:full`);
+      let blob = await lib.getFile(`${id}:full`).catch(() => undefined);
       if (!blob && song.fileUrl) {
-        set((s) => ({ decks: { ...s.decks, [deckId]: { ...emptyDeck(deckId), songId: id, name: song.name, status: "decoding", progressLabel: "Downloading from your library", progress: 0.1 } } }));
+        set((s) => ({ decks: { ...s.decks, [deckId]: { ...emptyDeck(deckId), songId: id, name: song!.name, status: "decoding", progressLabel: "Downloading from your library", progress: 0.1 } } }));
         try {
-          const bytes = await withCode((code) => cloud.cloudFetch(song.fileUrl!, code));
+          const bytes = await withCode((code) => cloud.cloudFetch(song!.fileUrl!, code));
           if (!bytes) {
             set((s) => ({ decks: { ...s.decks, [deckId]: emptyDeck(deckId) } }));
             return;
           }
           blob = new Blob([bytes], { type: song.mimeType });
-          await lib.putFile(`${id}:full`, blob);
+          try {
+            await lib.putFile(`${id}:full`, blob);
+          } catch (err) {
+            console.warn("Could not cache the song locally; it will download again next time", err);
+            void refreshStorage();
+          }
         } catch (err) {
           setDeck(deckId, { status: "error", error: `Download failed: ${(err as Error).message}` });
           return;
         }
       }
       if (!blob) {
-        get().showToast("The audio for that song is missing");
+        get().showToast(`The audio for “${song.name}” is not on this device or in the cloud (its upload never finished). Add the file again with Add song.`);
         return;
       }
-      await lib.updateSong(id, { lastUsedAt: Date.now() });
+      await lib.updateSong(id, { lastUsedAt: Date.now() }).catch(() => undefined);
       const file = new File([blob], song.fileName, { type: song.mimeType });
       await loadSongIntoDeck(deckId, song, file);
     },
