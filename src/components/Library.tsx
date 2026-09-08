@@ -380,6 +380,8 @@ function SongCard({ song, cloud, match, loadedOn, confirming, onLoad, onDelete, 
     }
   };
   const shown = displayName(song);
+  // The card is narrow: show the title alone and keep the artist for the tooltip and the deck header.
+  const cardName = song.title || song.name;
   const great = !loadedOn && match?.grade === "great";
   const ring = loadedOn ? DECK_COLORS[loadedOn].main : great ? GRADE_COLOR.great : undefined;
   const synced = !!song.fileUrl;
@@ -443,7 +445,7 @@ function SongCard({ song, cloud, match, loadedOn, confirming, onLoad, onDelete, 
           </span>
         )}
         <div className="text-[12.5px] font-semibold truncate tracking-[-0.01em] flex-1 min-w-0" onDoubleClick={startEditing}>
-          {shown}
+          {cardName}
         </div>
         <button className="shrink-0 text-muted hover:text-text opacity-0 group-hover:opacity-100 transition-opacity" onClick={startEditing} title="Edit title and artist" aria-label="Edit title and artist">
           <Icon name="wand" size={10} />
