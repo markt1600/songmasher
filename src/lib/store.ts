@@ -370,6 +370,16 @@ export const useStore = create<Store>((set, get) => {
     done: "Ready",
   };
 
+  /**
+   * Songs the local database could not keep (storage full or unavailable). They live in memory and
+   * in the cloud library instead, so every feature keeps working; the local copy is retried later.
+   */
+  const volatileSongs = new Map<string, LibrarySong>();
+  const rememberSong = (song: LibrarySong) => {
+    volatileSongs.set(song.id, song);
+    set((st) => ({ library: [song, ...st.library.filter((x) => x.id !== song.id)] }));
+  };
+
   /** Lossless uploads (FLAC, WAV, AIFF) are re-encoded to MP3 at this rate: a fraction of the size, transparent for mixing. */
   const STORE_KBPS = 320;
   const isLossless = (name: string, mime: string) => /\.(flac|wav|wave|aif|aiff)$/i.test(name) || /^audio\/(flac|x-flac|wav|x-wav|wave|vnd\.wave|aiff|x-aiff)$/i.test(mime);
@@ -445,6 +455,7 @@ export const useStore = create<Store>((set, get) => {
       void lib.requestPersistence();
     } catch (err) {
       noteStorageError("Saving the song record locally", err);
+      rememberSong(song);
     }
     if (get().config.cloud) void syncSongToCloud(song);
     return { song, file: stored };
@@ -619,15 +630,21 @@ export const useStore = create<Store>((set, get) => {
       stemSource: "none",
       aiStems: [],
     };
+    let stored = true;
     try {
       await lib.putFile(`${song.id}:full`, d.file);
       await lib.putSong(song);
     } catch (err) {
-      console.warn("Could not re-save the song", err);
-      return undefined;
+      noteStorageError("Re-saving the song locally", err);
+      stored = false;
     }
-    set((s) => ({ library: [song, ...s.library.filter((x) => x.id !== song.id)] }));
-    get().showToast(`${song.name} was missing from the library and has been saved again`);
+    if (stored) {
+      set((s) => ({ library: [song, ...s.library.filter((x) => x.id !== song.id)] }));
+      get().showToast(`${song.name} was missing from the library and has been saved again`);
+    } else {
+      // keep it in memory (and the cloud): stems, plans and projects work without the local copy
+      rememberSong(song);
+    }
     if (get().config.cloud) void syncSongToCloud(song);
     return song;
   };
@@ -772,8 +789,9 @@ export const useStore = create<Store>((set, get) => {
     } catch (err) {
       // A full local store must not lose the change: carry on from the in-memory record and still sync the cloud.
       noteStorageError("Updating the song record locally", err);
-      const cur = get().library.find((x) => x.id === id);
+      const cur = get().library.find((x) => x.id === id) ?? volatileSongs.get(id);
       next = cur ? { ...cur, ...patch, updatedAt: Date.now() } : undefined;
+      if (next) volatileSongs.set(id, next);
     }
     if (!next) return undefined;
     set((s) => ({ library: s.library.map((x) => (x.id === id ? next : x)) }));
@@ -1316,7 +1334,10 @@ export const useStore = create<Store>((set, get) => {
     },
 
     refreshLibrary: async () => {
-      const [local, storage, localProjects, localMixes] = await Promise.all([lib.listSongs(), lib.storageEstimate(), lib.listProjects(), lib.listMixes()]);
+      const [stored, storage, localProjects, localMixes] = await Promise.all([lib.listSongs().catch(() => [] as LibrarySong[]), lib.storageEstimate(), lib.listProjects().catch(() => [] as LibraryProject[]), lib.listMixes().catch(() => [] as LibraryMix[])]);
+      // songs the local store could not keep ride along in memory until a copy exists somewhere durable
+      for (const st of stored) volatileSongs.delete(st.id);
+      const local = [...stored, ...Array.from(volatileSongs.values())];
       set({ storage, projects: localProjects, mixes: localMixes });
       const cfg = get().config;
       if (!cfg.loaded || !cfg.cloud) {
@@ -2117,9 +2138,9 @@ export const useStore = create<Store>((set, get) => {
       const d = get().decks[deckId];
       const full = d.buffers.full;
       if (!full || !d.songId) return;
-      const song = (await lib.getSong(d.songId)) ?? (await resaveDeckSong(deckId));
+      const song = (await lib.getSong(d.songId).catch(() => undefined)) ?? get().library.find((x) => x.id === d.songId) ?? (await resaveDeckSong(deckId));
       if (!song) {
-        get().showToast("This song is no longer in the library and its file is gone. Add it again from the file to separate stems.");
+        get().showToast("This song's file is gone from this device. Add it again from the file to separate stems.");
         return;
       }
       // A job started earlier (here or on another device) that was never collected: pick it up instead of paying again.
