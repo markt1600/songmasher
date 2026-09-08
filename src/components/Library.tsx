@@ -2,6 +2,7 @@
 import { useMemo, useRef, useState } from "react";
 import { useStore } from "@/lib/store";
 import { displayName, formatBytes, type LibraryMix, type LibraryProject, type LibrarySong } from "@/lib/library";
+import { guessFromName } from "@/lib/audio/tags";
 import { GRADE_COLOR, GRADE_LABEL, matchSongs, type MatchInfo } from "@/lib/match";
 import { DECK_COLORS, type DeckId } from "@/lib/types";
 import { Icon } from "./ui";
@@ -40,7 +41,7 @@ export default function Library() {
   const syncing = useStore((s) => s.syncing);
   const cloudBytes = useStore((s) => s.cloudBytes);
   const cloudError = useStore((s) => s.cloudError);
-  const { importFiles, loadFromLibrary, deleteFromLibrary, changeAccessCode, refreshLibrary, openProject, renameProject, deleteProject, deleteMix, shareLink, playMix, showToast, updateSongMeta } = useStore();
+  const { importFiles, loadFromLibrary, deleteFromLibrary, changeAccessCode, refreshLibrary, openProject, renameProject, deleteProject, deleteMix, shareLink, playMix, showToast, updateSongMeta, guessSongTags } = useStore();
   const projects = useStore((s) => s.projects);
   const mixes = useStore((s) => s.mixes);
   const currentProject = useStore((s) => s.currentProject);
@@ -202,6 +203,7 @@ export default function Library() {
               match={matches.get(song.id) ?? null}
               loadedOn={loadedOn(song.id)}
               onEdit={(meta) => void updateSongMeta(song.id, meta)}
+              onGuess={config.ai ? () => guessSongTags(song.id) : undefined}
               confirming={confirmId === song.id}
               onLoad={(deck) => void loadFromLibrary(deck, song.id)}
               onDelete={() => {
@@ -366,8 +368,17 @@ function MixCard({ m, link, onPlay, onShare, onDelete }: { m: LibraryMix; link: 
   );
 }
 
-function SongCard({ song, cloud, match, loadedOn, confirming, onLoad, onDelete, onEdit }: { song: LibrarySong; cloud: boolean; match: MatchInfo | null; loadedOn: DeckId | null; confirming: boolean; onLoad: (deck: DeckId) => void; onDelete: () => void; onEdit: (meta: { title: string; artist: string }) => void }) {
+function SongCard({ song, cloud, match, loadedOn, confirming, onLoad, onDelete, onEdit, onGuess }: { song: LibrarySong; cloud: boolean; match: MatchInfo | null; loadedOn: DeckId | null; confirming: boolean; onLoad: (deck: DeckId) => void; onDelete: () => void; onEdit: (meta: { title: string; artist: string }) => void; onGuess?: () => Promise<{ title: string; artist: string } | null> }) {
   const [editing, setEditing] = useState<{ title: string; artist: string } | null>(null);
+  const [guessing, setGuessing] = useState(false);
+  /** stored tags when there are any, otherwise a sensible reading of the file name */
+  const startEditing = () => {
+    if (song.title || song.artist) setEditing({ title: song.title ?? "", artist: song.artist ?? "" });
+    else {
+      const g = guessFromName(song.name);
+      setEditing({ title: g.title ?? "", artist: g.artist ?? "" });
+    }
+  };
   const shown = displayName(song);
   const great = !loadedOn && match?.grade === "great";
   const ring = loadedOn ? DECK_COLORS[loadedOn].main : great ? GRADE_COLOR.great : undefined;
@@ -396,6 +407,25 @@ function SongCard({ song, cloud, match, loadedOn, confirming, onLoad, onDelete, 
           <input className="h-[22px] rounded-[6px] border border-white/[0.14] bg-black/30 px-2 text-[12px] outline-none focus:border-[#7c6cff]" placeholder="Title" value={editing.title} onChange={(e) => setEditing({ ...editing, title: e.target.value })} autoFocus aria-label="Title" />
           <input className="h-[22px] rounded-[6px] border border-white/[0.14] bg-black/30 px-2 text-[12px] outline-none focus:border-[#7c6cff]" placeholder="Artist" value={editing.artist} onChange={(e) => setEditing({ ...editing, artist: e.target.value })} aria-label="Artist" />
           <div className="flex items-center gap-1.5 justify-end">
+            {onGuess && (
+              <button
+                type="button"
+                className="btn btn-xs btn-ghost !h-[20px] mr-auto"
+                disabled={guessing}
+                title="Ask Claude which song this file is, from its name, length and tempo"
+                onClick={async () => {
+                  setGuessing(true);
+                  try {
+                    const g = await onGuess();
+                    if (g) setEditing(g);
+                  } finally {
+                    setGuessing(false);
+                  }
+                }}
+              >
+                {guessing ? <span className="h-3 w-3 rounded-full border-2 border-white/30 border-t-white animate-spin" /> : <Icon name="sparkles" size={10} />} Guess
+              </button>
+            )}
             <button type="button" className="btn btn-xs btn-ghost !h-[20px]" onClick={() => setEditing(null)}>
               Cancel
             </button>
@@ -412,10 +442,10 @@ function SongCard({ song, cloud, match, loadedOn, confirming, onLoad, onDelete, 
             {loadedOn}
           </span>
         )}
-        <div className="text-[12.5px] font-semibold truncate tracking-[-0.01em] flex-1 min-w-0" onDoubleClick={() => setEditing({ title: song.title ?? "", artist: song.artist ?? "" })}>
+        <div className="text-[12.5px] font-semibold truncate tracking-[-0.01em] flex-1 min-w-0" onDoubleClick={startEditing}>
           {shown}
         </div>
-        <button className="shrink-0 text-muted hover:text-text opacity-0 group-hover:opacity-100 transition-opacity" onClick={() => setEditing({ title: song.title ?? "", artist: song.artist ?? "" })} title="Edit title and artist" aria-label="Edit title and artist">
+        <button className="shrink-0 text-muted hover:text-text opacity-0 group-hover:opacity-100 transition-opacity" onClick={startEditing} title="Edit title and artist" aria-label="Edit title and artist">
           <Icon name="wand" size={10} />
         </button>
         {match && !loadedOn && (

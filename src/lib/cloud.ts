@@ -61,6 +61,12 @@ export async function cloudSongExists(id: string, code: string): Promise<boolean
   return ((await res.json()) as { exists: boolean }).exists;
 }
 
+/** Asks the server (Claude) for title/artist guesses from file names. */
+export async function guessTags(files: { id: string; name: string; durationSec?: number; bpm?: number; key?: string }[], code: string): Promise<{ id: string; title: string | null; artist: string | null; confidence: number }[]> {
+  const res = await check(await fetch("/api/tags", { method: "POST", headers: headers(code), body: JSON.stringify({ files }) }));
+  return ((await res.json()) as { songs: { id: string; title: string | null; artist: string | null; confidence: number }[] }).songs;
+}
+
 export async function cloudPutMeta(song: LibrarySong, code: string): Promise<void> {
   await check(await fetch("/api/library", { method: "PUT", headers: headers(code), body: JSON.stringify(serializeSong(song)) }));
 }

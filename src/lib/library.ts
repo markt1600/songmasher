@@ -43,6 +43,8 @@ export interface LibrarySong {
   /** from the file's own tags, or edited by hand; used for display and so the advisor can recognise the song */
   title?: string;
   artist?: string;
+  /** when Claude was asked to fill missing title/artist from the file name (so it is asked once) */
+  tagsGuessedAt?: number;
   /** derived from the Demucs vocal stem: phrases, per-bar vocal energy, melody chroma */
   vocal?: VocalProfile | null;
 }

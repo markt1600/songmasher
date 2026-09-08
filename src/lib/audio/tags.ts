@@ -151,3 +151,18 @@ export function readAudioTags(data: ArrayBuffer): AudioTags | null {
     return null;
   }
 }
+
+/** A sensible title/artist guess from a file name alone: "03 - Artist - Title (Official Video)" and friends. */
+export function guessFromName(name: string): AudioTags {
+  let s = name
+    .replace(/\.[a-z0-9]{2,5}$/i, "") // a real extension only ("01. 7 Years" keeps its title)
+    .replace(/[_]+/g, " ")
+    .replace(/^\s*(\d{1,2}\s*[.\-–]\s*|\d{2}\s+(?:[-–]\s*)?)+/, "") // track numbers: "01 ", "3. ", "03 - " (a title like "7 Years" survives)
+    .replace(/\s*[([{](official|lyric|audio|video|hd|hq|4k|remaster(ed)?|explicit|clean|mv|visualizer|music video)[^)\]}]*[)\]}]/gi, "")
+    .replace(/\s+/g, " ")
+    .trim();
+  s = s.replace(/\s*[-–—]\s*(official|lyric|audio|video)\s*(video|audio)?$/i, "").trim();
+  const parts = s.split(/\s+[-–—]\s+/);
+  if (parts.length >= 2 && parts[0].length <= 60) return { artist: clean(parts[0]), title: clean(parts.slice(1).join(" - ")) };
+  return { title: clean(s) };
+}

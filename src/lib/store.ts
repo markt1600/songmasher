@@ -4,7 +4,7 @@ import { barToTime, type SongAnalysis } from "./audio/analysis";
 import { vocalProfileMatches } from "./audio/vocal";
 import { audioBufferToChannels, channelsToAudioBuffer } from "./audio/wav";
 import { firstOnsetOffset, stemLagSamples } from "./audio/align";
-import { readAudioTags } from "./audio/tags";
+import { guessFromName, readAudioTags } from "./audio/tags";
 import { decodeArrayBuffer, decodeFile, getAudioContext, toMono } from "./engine/context";
 import { Engine, type EngineDecks } from "./engine/engine";
 import { runAnalysis, runEncodeMp3, runQuickStems, runSections, runVocalProfile } from "./workers";
@@ -209,6 +209,8 @@ interface Store {
   nudgeDownbeat: (deckId: DeckId, beats: number) => void;
   /** edit a song's title/artist tags (display name, and what the advisor is told) */
   updateSongMeta: (id: string, meta: { title?: string; artist?: string }) => Promise<void>;
+  /** Claude's best guess of title/artist for one song from its file name (not saved until you do) */
+  guessSongTags: (id: string) => Promise<{ title: string; artist: string } | null>;
   /** run tempo, downbeat and key detection again on a loaded song (after an algorithm update, or a bad reading) */
   reanalyze: (deckId: DeckId) => Promise<void>;
   nudgeGridMs: (deckId: DeckId, ms: number) => void;
@@ -473,6 +475,61 @@ export const useStore = create<Store>((set, get) => {
   const refreshStorage = async () => {
     const storage = await lib.storageEstimate().catch(() => null);
     if (storage) set({ storage });
+  };
+
+  /**
+   * Songs added before tags were read: take title/artist from the stored file's own tags where they
+   * exist, otherwise ask Claude once (from the file name, duration and tempo), falling back to a plain
+   * file-name guess. Guessed values are stored like any other tag and can be edited on the card.
+   */
+  let fillingTags = false;
+  const fillMissingTags = async (songs: LibrarySong[]) => {
+    if (fillingTags) return;
+    fillingTags = true;
+    try {
+      const missing = songs.filter((x) => !x.title && !x.artist && !x.tagsGuessedAt);
+      if (missing.length === 0) return;
+      const stillMissing: LibrarySong[] = [];
+      for (const song of missing) {
+        const blob = await lib.getFile(`${song.id}:full`).catch(() => undefined);
+        if (blob && blob.size > 512) {
+          // head (ID3v2 / FLAC / MP4) plus the last 128 bytes (ID3v1) is all the parsers need
+          const head = await blob.slice(0, Math.min(blob.size, 2 * 1024 * 1024)).arrayBuffer();
+          const tail = await blob.slice(Math.max(0, blob.size - 128)).arrayBuffer();
+          const joined = new Uint8Array(head.byteLength + tail.byteLength);
+          joined.set(new Uint8Array(head), 0);
+          joined.set(new Uint8Array(tail), head.byteLength);
+          const tags = readAudioTags(joined.buffer);
+          if (tags?.title || tags?.artist) {
+            await persistSong(song.id, { title: tags.title, artist: tags.artist });
+            continue;
+          }
+        }
+        stillMissing.push(song);
+      }
+      if (stillMissing.length === 0) return;
+      let guesses: { id: string; title: string | null; artist: string | null; confidence: number }[] = [];
+      if (get().config.ai) {
+        for (let i = 0; i < stillMissing.length; i += 30) {
+          const batch = stillMissing.slice(i, i + 30).map((x) => ({ id: x.id, name: x.name, durationSec: Math.round(x.duration), bpm: Math.round(x.bpm), key: x.keyName }));
+          const res = await withCode((code) => cloud.guessTags(batch, code)).catch((err) => {
+            console.warn("Tag guessing failed", err);
+            return undefined;
+          });
+          if (res) guesses = guesses.concat(res);
+        }
+      }
+      for (const song of stillMissing) {
+        const g = guesses.find((x) => x.id === song.id);
+        const fallback = guessFromName(song.name);
+        const title = g?.title ?? fallback.title;
+        const artist = g && g.confidence >= 0.5 ? (g.artist ?? undefined) : fallback.artist;
+        await persistSong(song.id, { ...(title ? { title } : {}), ...(artist ? { artist } : {}), tagsGuessedAt: Date.now() });
+        for (const d of ["A", "B"] as DeckId[]) if (get().decks[d].songId === song.id) setDeck(d, { name: lib.displayName({ name: song.name, title, artist }) });
+      }
+    } finally {
+      fillingTags = false;
+    }
   };
 
   /** Converts older lossless imports one at a time in the background, freeing local and cloud space. */
@@ -1264,6 +1321,7 @@ export const useStore = create<Store>((set, get) => {
       const cfg = get().config;
       if (!cfg.loaded || !cfg.cloud) {
         set({ library: local });
+        if (cfg.loaded) void fillMissingTags(local);
         return;
       }
       void syncRecords("projects", localProjects, lib.putProject, lib.deleteProject, (list) => set({ projects: list.sort((a, b) => b.updatedAt - a.updatedAt) }));
@@ -1312,6 +1370,7 @@ export const useStore = create<Store>((set, get) => {
       set({ library: merged, cloudBytes: remote.bytes });
       for (const song of toUpload) void syncSongToCloud(song);
       void convertStoredLossless(merged);
+      void fillMissingTags(merged);
     },
 
     importFiles: async (files) => {
@@ -1619,6 +1678,22 @@ export const useStore = create<Store>((set, get) => {
     adoptDeckTempo: (deckId) => {
       const a = get().decks[deckId].analysis;
       if (a) get().setMasterBpm(a.bpm);
+    },
+
+    guessSongTags: async (id) => {
+      const song = get().library.find((x) => x.id === id);
+      if (!song) return null;
+      if (!get().config.ai) {
+        const g = guessFromName(song.name);
+        return { title: g.title ?? "", artist: g.artist ?? "" };
+      }
+      const res = await withCode((code) => cloud.guessTags([{ id, name: song.name, durationSec: Math.round(song.duration), bpm: Math.round(song.bpm), key: song.keyName }], code)).catch((err) => {
+        get().showToast(`Could not ask Claude: ${(err as Error).message}`);
+        return undefined;
+      });
+      const r = res?.find((x) => x.id === id);
+      const g = guessFromName(song.name);
+      return { title: r?.title ?? g.title ?? "", artist: r?.artist ?? g.artist ?? "" };
     },
 
     updateSongMeta: async (id, meta) => {
