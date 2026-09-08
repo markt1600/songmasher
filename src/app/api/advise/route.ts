@@ -56,7 +56,7 @@ const ConstraintsSchema = z.object({
   template: TemplateEnum.nullable(),
   vocals: z.enum(["one", "both"]).nullable(),
   /** a signature moment the arrangement must open with: that deck's full mix from srcBar for `bars` */
-  mustInclude: z.object({ deck: Deck, srcBar: z.number().int().min(0), bars: z.number().int().min(2).max(16), label: z.string().max(60) }).nullable(),
+  mustInclude: z.object({ deck: Deck, srcBar: z.number().int().min(0), bars: z.number().int().min(2).max(16), label: z.string().max(300) }).nullable(),
 });
 
 const ResponseSchema = z.object({
@@ -70,8 +70,8 @@ const ResponseSchema = z.object({
     .array(
       z.object({
         deck: Deck,
-        recognised: z.string().max(120).nullable(),
-        moments: z.array(z.object({ what: z.string().max(80), section: z.string().max(40), startBar: z.number().int().min(0).nullable(), bars: z.number().int().min(1).max(32).nullable(), importance: z.number().int().min(1).max(3) })).max(4),
+        recognised: z.string().max(300).nullable(),
+        moments: z.array(z.object({ what: z.string().max(300), section: z.string().max(120), startBar: z.number().int().min(0).nullable(), bars: z.number().int().min(1).max(32).nullable(), importance: z.number().int().min(1).max(3) })).max(6),
       }),
     )
     .max(2),
@@ -119,7 +119,8 @@ Respond with:
   with bar ranges), null when you cannot place it. importance 3 = the song is not the song without it. Never invent
   moments for songs you do not actually recognise; a cover, live version or remix may differ from the studio track.
 - If a moment of importance 3 is an intro or opening riff and the user has not asked otherwise, keep it: return
-  constraints.mustInclude = { deck, srcBar (the section's start bar), bars (4-8, the riff's length), label } and say
+  constraints.mustInclude = { deck, srcBar (the section's start bar), bars (4-8, the riff's length), label (a few
+  words, e.g. "the bass riff intro") } and say
   so in the summary ("Opens with the bass riff of Ice Ice Baby"). Otherwise mustInclude null. When the request
   says knowledge is off, return knowledge [] and mustInclude null.
 - clipLabels: a short evocative label per clip of the chosen candidate, in order (same count as its clips), else [].
@@ -156,14 +157,23 @@ export async function POST(request: Request): Promise<Response> {
   }
   if (instruction) messages.push({ role: "user", content: `Instruction: ${instruction}\n\nThe candidates above were searched with the previous constraints. If they already satisfy this, choose one; otherwise return new constraints.` });
   else messages.push({ role: "user", content: "Choose the candidate to build and explain it." });
-  try {
-    const response = await client.messages.parse({
+  const ask = (extra: Anthropic.MessageParam[]) =>
+    client.messages.parse({
       model: "claude-opus-5",
       max_tokens: 6000,
       system: SYSTEM,
       output_config: { format: zodOutputFormat(ResponseSchema), effort: "high" },
-      messages,
+      messages: [...messages, ...extra],
     });
+  try {
+    let response;
+    try {
+      response = await ask([]);
+    } catch (err) {
+      // A reply that broke the schema (a label too long, a stray field): one more try with the rule spelled out.
+      if (!/structured output|parse/i.test((err as Error).message)) throw err;
+      response = await ask([{ role: "user", content: "Your previous reply did not fit the required schema. Answer again, keeping every text field short (labels a few words, no field over 200 characters) and every field within its allowed values." }]);
+    }
     if (response.stop_reason === "refusal") return Response.json({ error: "The advisor declined this request" }, { status: 422 });
     const out = response.parsed_output;
     if (!out) return Response.json({ error: "The advisor returned an unreadable answer" }, { status: 502 });

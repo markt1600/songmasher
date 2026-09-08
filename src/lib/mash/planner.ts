@@ -406,7 +406,8 @@ export function planMashup(songs: [PlannerSong, PlannerSong], constraints: PlanC
   if (fStarts.length === 0) fStarts.push(0);
   // A signature opening: when it belongs to the foundation song, the foundation simply starts there and
   // the vocal waits; when it belongs to the other song, its full mix opens the arrangement as a swap.
-  const feature = constraints.knowledge === false ? undefined : constraints.mustInclude;
+  const rawFeature = constraints.knowledge === false ? undefined : constraints.mustInclude;
+  const feature = rawFeature ? { ...rawFeature, label: rawFeature.label ? (rawFeature.label.length > 48 ? `${rawFeature.label.slice(0, 45).trimEnd()}…` : rawFeature.label) : undefined } : undefined;
   const lead = feature ? Math.max(2, Math.min(16, Math.round(feature.bars))) : 0;
   if (feature && feature.deck === F.deck) {
     fStarts.length = 0;
