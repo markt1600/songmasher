@@ -101,9 +101,28 @@ function tx<T>(store: StoreName, mode: IDBTransactionMode, fn: (s: IDBObjectStor
       new Promise<T>((resolve, reject) => {
         const t = db.transaction(store, mode);
         const req = fn(t.objectStore(store));
-        req.onsuccess = () => resolve(req.result);
-        req.onerror = () => reject(req.error ?? new Error("Library operation failed"));
-        t.oncomplete = () => db.close();
+        let result: T;
+        let failed = false;
+        req.onsuccess = () => {
+          result = req.result;
+        };
+        req.onerror = () => {
+          failed = true;
+          reject(req.error ?? new Error("Library operation failed"));
+        };
+        // A write only counts once the transaction commits: running out of storage aborts the
+        // transaction after the request itself reported success, and that must not look like a save.
+        t.oncomplete = () => {
+          db.close();
+          if (!failed) resolve(result);
+        };
+        t.onabort = () => {
+          db.close();
+          if (!failed) reject(t.error ?? new Error("Library write was aborted (storage may be full)"));
+        };
+        t.onerror = () => {
+          /* the request or abort handlers report it */
+        };
       }),
   );
 }
@@ -280,4 +299,11 @@ export function mergeSongRecords(local: LibrarySong, remote: LibrarySong): { nex
     pendingStems: hasAi ? null : (local.pendingStems ?? remote.pendingStems ?? null),
   };
   return { next, localNewer, remoteNewer };
+}
+
+/** True for the errors a full or unavailable local store raises. */
+export function isStorageError(err: unknown): boolean {
+  const name = (err as { name?: string } | null)?.name ?? "";
+  const msg = String((err as Error)?.message ?? err);
+  return /QuotaExceeded|aborted|storage may be full|NotAllowed|InvalidState|UnknownError/i.test(name + " " + msg);
 }

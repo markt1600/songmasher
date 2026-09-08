@@ -55,6 +55,12 @@ export async function cloudList(code: string): Promise<{ songs: LibrarySong[]; b
   return { songs: j.songs.map(deserializeSong), bytes: j.bytes };
 }
 
+/** Whether anything is still stored for this song in the cloud (used before treating it as deleted elsewhere). */
+export async function cloudSongExists(id: string, code: string): Promise<boolean> {
+  const res = await check(await fetch(`/api/library?exists=${encodeURIComponent(id)}`, { headers: headers(code), cache: "no-store" }));
+  return ((await res.json()) as { exists: boolean }).exists;
+}
+
 export async function cloudPutMeta(song: LibrarySong, code: string): Promise<void> {
   await check(await fetch("/api/library", { method: "PUT", headers: headers(code), body: JSON.stringify(serializeSong(song)) }));
 }

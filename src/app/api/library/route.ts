@@ -35,11 +35,21 @@ function metaStamp(pathname: string): number {
   return m ? Number(m[1]) : 0;
 }
 
-/** List every song in the cloud library (newest metadata per song). */
+/** List every song in the cloud library (newest metadata per song), or check one song's existence with ?exists=<id>. */
 export async function GET(request: Request): Promise<Response> {
   if (!cloudEnabled()) return Response.json({ error: "Cloud library is not configured" }, { status: 501 });
   if (!authorized(request.headers.get("x-access-code"))) return unauthorized();
   const kind = kindOf(request);
+  const exists = new URL(request.url).searchParams.get("exists");
+  if (exists !== null) {
+    if (!ID_RE.test(exists)) return Response.json({ error: "Invalid id" }, { status: 400 });
+    try {
+      const page = await list({ prefix: `${kind}/${exists}/`, limit: 1 });
+      return Response.json({ exists: page.blobs.length > 0 });
+    } catch (err) {
+      return Response.json({ error: `Blob: ${(err as Error).message}` }, { status: 502 });
+    }
+  }
   try {
     const rows = await listAll(`${kind}/`);
     const bySong = new Map<string, BlobRow[]>();

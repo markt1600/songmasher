@@ -423,12 +423,18 @@ export const useStore = create<Store>((set, get) => {
       aiStems: [],
       ...(converted ? { converted } : {}),
     };
+    // The file is the big write and the one that fails first when storage is full; keep the record
+    // regardless so the song stays listed (it streams from the cloud, or asks to be added again).
     try {
       await lib.putFile(`${id}:full`, stored);
+    } catch (err) {
+      noteStorageError("Saving the song locally", err);
+    }
+    try {
       await lib.putSong(song);
       void lib.requestPersistence();
     } catch (err) {
-      console.warn("Library save failed", err);
+      noteStorageError("Saving the song record locally", err);
     }
     if (get().config.cloud) void syncSongToCloud(song);
     return { song, file: stored };
@@ -444,6 +450,16 @@ export const useStore = create<Store>((set, get) => {
       else dst.set(src.subarray(-lag), 0);
     }
     return out;
+  };
+
+  let storageWarned = false;
+  /** One clear message the first time the local store refuses a write; details go to the console. */
+  const noteStorageError = (what: string, err: unknown) => {
+    console.warn(`${what} failed`, err);
+    void refreshStorage();
+    if (storageWarned || !lib.isStorageError(err)) return;
+    storageWarned = true;
+    get().showToast("This browser's local storage is full. Songs and stems still play, streaming from your cloud library; deleting songs you no longer need frees space.");
   };
 
   const refreshStorage = async () => {
@@ -595,7 +611,7 @@ export const useStore = create<Store>((set, get) => {
           try {
             await lib.putFile(`${song.id}:${k}`, new Blob([bytes], { type: "audio/mpeg" }));
           } catch (err) {
-            console.warn(`Could not store the ${k} stem locally; it will stream from the cloud`, err);
+            noteStorageError(`Storing the ${k} stem locally`, err);
           }
           decoded[k] = await decodeArrayBuffer(bytes);
         } catch (err) {
@@ -685,7 +701,15 @@ export const useStore = create<Store>((set, get) => {
 
   /** Update a song locally and mirror the change to the cloud. */
   const persistSong = async (id: string, patch: Partial<LibrarySong>, immediate = false): Promise<LibrarySong | undefined> => {
-    const next = await lib.updateSong(id, patch);
+    let next: LibrarySong | undefined;
+    try {
+      next = await lib.updateSong(id, patch);
+    } catch (err) {
+      // A full local store must not lose the change: carry on from the in-memory record and still sync the cloud.
+      noteStorageError("Updating the song record locally", err);
+      const cur = get().library.find((x) => x.id === id);
+      next = cur ? { ...cur, ...patch, updatedAt: Date.now() } : undefined;
+    }
     if (!next) return undefined;
     set((s) => ({ library: s.library.map((x) => (x.id === id ? next : x)) }));
     if (get().config.cloud && next.cloud) {
@@ -1254,23 +1278,23 @@ export const useStore = create<Store>((set, get) => {
         if (r) {
           remoteById.delete(l.id);
           const { next, localNewer } = lib.mergeSongRecords(l, r);
-          await lib.putSong(next).catch((err) => console.warn("Local record write failed", err));
+          await lib.putSong(next).catch((err) => noteStorageError("Storing the song record locally", err));
           const stemsChanged = (next.aiStems?.length ?? 0) !== (r.aiStems?.length ?? 0) || Object.keys(next.stemUrls ?? {}).length !== Object.keys(r.stemUrls ?? {}).length;
           if (localNewer || stemsChanged) scheduleCloudMeta(next);
           // Stems separated here but never uploaded (a closed tab mid-sync): push them now.
           if (next.aiStems.some((k) => !next.stemUrls?.[k])) void syncSongToCloud(next);
           merged.push(next);
-        } else if (l.cloud && !onDeck(l.id) && Date.now() - (l.updatedAt ?? l.addedAt) > 10 * 60_000) {
-          // deleted from another device (cloud listings can lag a freshly written record by a while, so
-          // anything touched in the last ten minutes, or sitting on a deck, is kept and re-synced instead)
-          await lib.deleteSong(l.id);
+        } else if (l.cloud && !onDeck(l.id) && Date.now() - (l.updatedAt ?? l.addedAt) > 10 * 60_000 && (await withCode((code) => cloud.cloudSongExists(l.id, code)).catch(() => true)) === false) {
+          // deleted from another device: confirmed against the song's own cloud folder, never inferred
+          // from a listing that may have skipped it (a metadata write racing the list, a transient fetch)
+          await lib.deleteSong(l.id).catch(() => undefined);
         } else {
           merged.push(l);
           toUpload.push(l);
         }
       }
       for (const r of remoteById.values()) {
-        await lib.putSong(r).catch((err) => console.warn("Local record write failed", err));
+        await lib.putSong(r).catch((err) => noteStorageError("Storing the song record locally", err));
         merged.push(r);
       }
       merged.sort((a, b) => b.lastUsedAt - a.lastUsedAt);
@@ -1309,7 +1333,7 @@ export const useStore = create<Store>((set, get) => {
           try {
             await lib.putSong(listed);
           } catch (err) {
-            console.warn("Could not store the song record locally", err);
+            noteStorageError("Storing the song record locally", err);
           }
         }
       }
@@ -1331,8 +1355,7 @@ export const useStore = create<Store>((set, get) => {
           try {
             await lib.putFile(`${id}:full`, blob);
           } catch (err) {
-            console.warn("Could not cache the song locally; it will download again next time", err);
-            void refreshStorage();
+            noteStorageError("Caching the song locally", err);
           }
         } catch (err) {
           setDeck(deckId, { status: "error", error: `Download failed: ${(err as Error).message}` });
