@@ -194,6 +194,16 @@ export async function getFile(id: string): Promise<Blob | undefined> {
   }
 }
 
+/** Keys of every stored audio file (`<songId>:full` and `<songId>:<stem>`). */
+export async function listFileIds(): Promise<string[]> {
+  const keys = await tx<IDBValidKey[]>("files", "readonly", (s) => s.getAllKeys());
+  return keys.map(String);
+}
+
+export async function deleteFile(id: string): Promise<void> {
+  await tx("files", "readwrite", (s) => s.delete(id));
+}
+
 export async function deleteSong(id: string): Promise<void> {
   const song = await getSong(id);
   await tx("songs", "readwrite", (s) => s.delete(id));

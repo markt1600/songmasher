@@ -855,6 +855,42 @@ export const useStore = create<Store>((set, get) => {
     return p;
   };
 
+  /**
+   * The local mirror holds audio only for the songs on the decks. Everything else that already has a
+   * cloud copy is dropped from this device (records stay, so the library list is complete); a song
+   * comes back from the cloud when it is loaded again. Songs without a cloud copy are never dropped.
+   */
+  let pruning = false;
+  const pruneLocalMirror = async () => {
+    if (pruning) return;
+    pruning = true;
+    try {
+      const st = get();
+      const keep = new Set<string>();
+      for (const d of ["A", "B"] as DeckId[]) if (st.decks[d].songId && st.decks[d].status !== "empty") keep.add(st.decks[d].songId!);
+      for (const id of uploading.keys()) keep.add(id);
+      for (const id of volatileSongs.keys()) keep.add(id);
+      const records = new Map(st.library.map((x) => [x.id, x]));
+      const ids = await lib.listFileIds().catch(() => [] as string[]);
+      let freed = 0;
+      for (const key of ids) {
+        const sep = key.lastIndexOf(":");
+        const songId = key.slice(0, sep);
+        const part = key.slice(sep + 1);
+        if (keep.has(songId)) continue;
+        const rec = records.get(songId);
+        // only drop what the cloud can give back: the song file needs fileUrl, a stem needs its own stemUrl
+        const durable = rec?.cloud && (part === "full" ? !!rec.fileUrl : !!rec.stemUrls?.[part as lib.AiStemKey]);
+        if (!durable) continue;
+        await lib.deleteFile(key).catch(() => undefined);
+        freed++;
+      }
+      if (freed) void refreshStorage();
+    } finally {
+      pruning = false;
+    }
+  };
+
   /** Push a local-only song (file, stems, metadata) to the cloud library. */
   const syncSongToCloud = async (song: LibrarySong) => {
     try {
@@ -872,6 +908,7 @@ export const useStore = create<Store>((set, get) => {
       }
       await persistSong(song.id, { stemUrls, cloud: true }, true);
       set({ syncing: null, cloudError: null });
+      void pruneLocalMirror();
     } catch (err) {
       set({ syncing: null, cloudError: `Sync failed: ${(err as Error).message}` });
     }
@@ -958,6 +995,7 @@ export const useStore = create<Store>((set, get) => {
     }
     refreshSuggestions();
     void get().refreshLibrary();
+    void pruneLocalMirror();
     if (!song.analysis.sections) void refreshSections(deckId); // older library records
     // Restore stems in the background, or collect a separation that is still running in the cloud
     const stemKeys = Array.from(new Set([...(song.aiStems ?? []), ...(Object.keys(song.stemUrls ?? {}) as lib.AiStemKey[])]));
@@ -1392,6 +1430,7 @@ export const useStore = create<Store>((set, get) => {
       for (const song of toUpload) void syncSongToCloud(song);
       void convertStoredLossless(merged);
       void fillMissingTags(merged);
+      void pruneLocalMirror();
     },
 
     importFiles: async (files) => {
@@ -1650,6 +1689,7 @@ export const useStore = create<Store>((set, get) => {
         return { decks: { ...s.decks, [deckId]: emptyDeck(deckId) }, project: { ...s.project, clips, foundation }, playing: false, previewDeck: null, selectedClipIds: [] };
       });
       refreshSuggestions();
+      void pruneLocalMirror();
     },
 
     startOver: () => {
@@ -1687,6 +1727,7 @@ export const useStore = create<Store>((set, get) => {
       } catch {
         /* ignore */
       }
+      void pruneLocalMirror();
     },
 
     setMasterBpm: (bpm) => {

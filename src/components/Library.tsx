@@ -88,7 +88,7 @@ export default function Library() {
   };
 
   const count = library.length;
-  const where = config.cloud ? "synced to your cloud library" : "saved in this browser";
+  const where = config.cloud ? "synced to your cloud library (this device keeps audio for the two loaded songs only)" : "saved in this browser";
   const size = config.cloud ? cloudBytes : storage?.usage ?? 0;
   const status = count === 0 ? (config.cloud ? "Songs you add are saved to your cloud library and follow you to any device" : "Songs you add are saved in this browser, stems included") : `${count} song${count === 1 ? "" : "s"} ${where}${size ? ` · ${formatBytes(size)}` : ""}`;
 
