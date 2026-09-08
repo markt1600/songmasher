@@ -204,6 +204,8 @@ interface Store {
   setMasterBpm: (bpm: number) => void;
   adoptDeckTempo: (deckId: DeckId) => void;
   nudgeDownbeat: (deckId: DeckId, beats: number) => void;
+  /** run tempo, downbeat and key detection again on a loaded song (after an algorithm update, or a bad reading) */
+  reanalyze: (deckId: DeckId) => Promise<void>;
   nudgeGridMs: (deckId: DeckId, ms: number) => void;
   scaleTempo: (deckId: DeckId, factor: number) => void;
   setDeckBpm: (deckId: DeckId, bpm: number) => void;
@@ -1524,6 +1526,23 @@ export const useStore = create<Store>((set, get) => {
     adoptDeckTempo: (deckId) => {
       const a = get().decks[deckId].analysis;
       if (a) get().setMasterBpm(a.bpm);
+    },
+
+    reanalyze: async (deckId) => {
+      const d = get().decks[deckId];
+      const full = d.buffers.full;
+      if (!full || d.status !== "ready") return;
+      setDeck(deckId, { progressLabel: "Listening for the beat", progress: 0.05, status: "analyzing" });
+      try {
+        const analysis = await runAnalysis(toMono(full), full.sampleRate, (p) => setDeck(deckId, { progressLabel: PROGRESS_LABELS[p.stage] ?? p.stage, progress: p.value }));
+        if (get().decks[deckId].songId !== d.songId) return;
+        setDeck(deckId, { status: "ready", progress: 1, progressLabel: "" });
+        applyAnalysis(deckId, analysis);
+        get().showToast(`${d.name}: ${analysis.bpm.toFixed(1)} BPM · ${analysis.key.name}`);
+      } catch (err) {
+        setDeck(deckId, { status: "ready", progress: 1, progressLabel: "" });
+        get().showToast(`Re-analysis failed: ${(err as Error).message}`);
+      }
     },
 
     nudgeDownbeat: (deckId, beats) => {

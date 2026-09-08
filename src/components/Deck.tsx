@@ -28,6 +28,7 @@ export default function Deck({ id }: { id: DeckId }) {
     nudgeDownbeat,
     nudgeGridMs,
     scaleTempo,
+    reanalyze,
     setDeckBpm,
     resetSections,
     separateQuick,
@@ -312,6 +313,9 @@ export default function Deck({ id }: { id: DeckId }) {
               </button>
               <button className="btn btn-sm ml-2" onClick={() => resetSections(id)} title="Discard manual section edits and detect the structure again">
                 Re-detect sections
+              </button>
+              <button className="btn btn-sm" onClick={() => void reanalyze(id)} title="Run tempo, downbeat and key detection again with the current analyser (songs analysed by an older version keep their old reading until you do)">
+                Re-analyse
               </button>
               <span className="text-muted ml-auto font-mono tabular-nums text-[11px]">offset {(a.firstDownbeat * 1000).toFixed(0)} ms</span>
             </div>

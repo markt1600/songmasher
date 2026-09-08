@@ -18,12 +18,11 @@ const FADE_STEPS = [0, 0.25, 0.5, 1, 2, 4];
 function laneTop(lane: number): number {
   return lane === 0 ? 0 : LANE_H + AUTO_H + (lane - 1) * LANE_H;
 }
-function laneAt(y: number): number | "auto" | null {
-  if (y < 0) return null;
+/** Drop lane for a pointer height inside the lanes area: never null, the nearest sensible lane. */
+function nearestLane(y: number): number {
   if (y < LANE_H) return 0;
-  if (y < LANE_H + AUTO_H) return "auto";
-  const l = 1 + Math.floor((y - LANE_H - AUTO_H) / LANE_H);
-  return l <= CLIP_LANES ? l : null;
+  if (y < LANE_H + AUTO_H) return 1;
+  return Math.max(1, Math.min(CLIP_LANES, 1 + Math.floor((y - LANE_H - AUTO_H) / LANE_H)));
 }
 const LANES_HEIGHT = LANE_H + AUTO_H + CLIP_LANES * LANE_H;
 
@@ -48,23 +47,29 @@ export default function Timeline() {
   const spb = 60 / project.masterBpm;
 
   useEffect(() => {
-    const el = lanesRef.current;
-    if (!el) return;
+    const el = scrollRef.current;
+    const lanes = lanesRef.current;
+    if (!el || !lanes) return;
     return register("timeline", {
+      // the whole scrollable timeline (ruler and header column included) accepts drops
       el,
       accepts: ["selection"],
       resolve: (x, y, payload, altKey) => {
         if (payload.kind !== "selection") return null;
-        const r = el.getBoundingClientRect();
-        const lane = laneAt(y - r.top);
-        if (lane === null || lane === "auto") return null;
-        const rawBeat = Math.max(0, (x - r.left) / zoom - payload.lengthBeats / 2);
+        const r = lanes.getBoundingClientRect();
+        // Forgiving placement: anywhere over the timeline is a valid drop. Above the lanes or on the
+        // foundation row means "use as foundation"; the automation row and anything below the last
+        // lane go to the nearest clip lane.
+        const lane = nearestLane(y - r.top);
+        // The clip starts where the pointer is (its left edge follows the cursor), snapped to the bar,
+        // or to the beat with the option key held.
+        const rawBeat = Math.max(0, (x - r.left) / zoom);
         const snap = altKey ? 1 : 4;
         const beat = Math.round(rawBeat / snap) * snap;
         const bars = payload.lengthBeats / 4;
         return lane === 0
-          ? { lane, beat: 0, label: `Foundation from bar ${payload.srcBar + 1}` }
-          : { lane, beat, label: `Lane ${lane} · bar ${Math.floor(beat / 4) + 1} · ${bars} bar${bars === 1 ? "" : "s"}` };
+          ? { lane, beat: 0, label: `Use as foundation from bar ${payload.srcBar + 1}` }
+          : { lane, beat, label: `Lane ${lane} · bar ${Math.floor(beat / 4) + 1} · ${bars} bar${bars === 1 ? "" : "s"}${altKey ? " · beat snap" : " · snaps to bar (⌥ for beats)"}` };
       },
       onDrop: (payload, info) => {
         if (payload.kind !== "selection" || info.lane === undefined) return;
