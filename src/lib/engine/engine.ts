@@ -2,7 +2,7 @@ import { integratedLufs } from "../audio/master";
 import { localBeatPhase } from "../audio/align";
 import { barToTime, type SongAnalysis } from "../audio/analysis";
 import { audioBufferToChannels, channelsToAudioBuffer } from "../audio/wav";
-import type { AutomationPoint, Clip, DeckId, Project, StemKey, TransportOptions } from "../types";
+import type { AutomationPoint, Clip, DeckId, Eq, Project, StemKey, TransportOptions } from "../types";
 import { runStretch } from "../workers";
 import { getAudioContext } from "./context";
 
@@ -24,6 +24,8 @@ export interface PlayEvent {
   gain: number;
   /** level-match trim (linear) applied under the user gain; 1 when matching is off */
   trim?: number;
+  /** three-band EQ (dB) after manual and automatic settings are combined */
+  eq?: Eq;
   fadeIn: number; // seconds
   fadeOut: number;
   clipId?: string;
@@ -197,6 +199,8 @@ export class Engine {
   private phases = new Map<string, number>();
   /** timing nudges (seconds of timeline) by clip id from the last prepare() */
   private timing = new Map<string, number>();
+  /** automatic low-band cuts (dB) by clip id from the last prepare() */
+  private autoEq = new Map<string, number>();
   onEnded: (() => void) | null = null;
 
   get ctx(): AudioContext {
@@ -262,7 +266,41 @@ export class Engine {
     for (const ev of unique) await this.getBuffer(ev, decks, project.masterBpm, onProgress);
     this.applyLevelMatch(project, decks, events);
     this.applyTightTiming(project, decks, events);
+    this.applyEq(project, events);
     return events;
+  }
+
+  /**
+   * EQ mixing. Manual settings always apply. With autoEq on, a part layered over the foundation gives
+   * up its lows (the foundation owns the bass, so two basslines never fight) and a layered vocal loses
+   * its rumble; swapped sections replace the foundation, so they keep everything.
+   */
+  private applyEq(project: Project, events: PlayEvent[]) {
+    this.autoEq.clear();
+    const auto = project.autoEq !== false && !!project.foundation;
+    const f = project.foundation;
+    for (const ev of events) {
+      const manual: Eq = ev.clipId ? (project.clips.find((c) => c.id === ev.clipId)?.eq ?? { low: 0, mid: 0, high: 0 }) : (f?.eq ?? { low: 0, mid: 0, high: 0 });
+      let autoLow = 0;
+      if (auto && ev.clipId) {
+        const clip = project.clips.find((c) => c.id === ev.clipId);
+        if (clip && clip.mode !== "swap") {
+          if (ev.stem === "full" || ev.stem === "instrumental" || ev.stem === "melodic") autoLow = -18;
+          else if (ev.stem === "drums") autoLow = -10;
+          else if (ev.stem === "vocals") autoLow = -6;
+        }
+      }
+      if (autoLow && ev.clipId) this.autoEq.set(ev.clipId, autoLow);
+      const eq: Eq = { low: Math.max(-40, manual.low + autoLow), mid: manual.mid, high: manual.high };
+      if (eq.low || eq.mid || eq.high) ev.eq = eq;
+    }
+  }
+
+  /** Automatic low-band cuts (dB) applied at the last prepare(), by clip id. */
+  autoEqDb(): Record<string, number> {
+    const out: Record<string, number> = {};
+    for (const [k, v] of this.autoEq) out[k] = v;
+    return out;
   }
 
   /** Real-beat offset of a deck's full mix around a source time, cached per 10 ms. */
@@ -469,7 +507,30 @@ export class Engine {
       const level = ctx.createGain();
       level.gain.value = ev.gain * (ev.trim ?? 1);
       src.connect(g);
-      g.connect(level);
+      // three-band EQ: low shelf, mid peak, high shelf (only inserted when something is not flat)
+      let tail: AudioNode = g;
+      const eq = ev.eq;
+      if (eq && (eq.low || eq.mid || eq.high)) {
+        const low = ctx.createBiquadFilter();
+        low.type = "lowshelf";
+        low.frequency.value = 220;
+        low.gain.value = eq.low;
+        const mid = ctx.createBiquadFilter();
+        mid.type = "peaking";
+        mid.frequency.value = 1200;
+        mid.Q.value = 0.8;
+        mid.gain.value = eq.mid;
+        const high = ctx.createBiquadFilter();
+        high.type = "highshelf";
+        high.frequency.value = 5000;
+        high.gain.value = eq.high;
+        tail.connect(low);
+        low.connect(mid);
+        mid.connect(high);
+        tail = high;
+        disposables.push(low, mid, high);
+      }
+      tail.connect(level);
       level.connect(ev.clipId ? dest : lp);
       src.start(when, offset, Math.min(dur, buf.duration - offset));
       nodes.push(src);

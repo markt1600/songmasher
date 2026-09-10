@@ -2,6 +2,7 @@
 import { useState, type ReactNode } from "react";
 import { useStore } from "@/lib/store";
 import { DECK_COLORS } from "@/lib/types";
+import { keysCompatible, shiftedKey } from "@/lib/audio/music";
 import type { PlanCandidate, PlanConstraints } from "@/lib/mash/planner";
 import { Icon } from "./ui";
 
@@ -16,6 +17,34 @@ function Chip({ on, title, onClick, children }: { on: boolean; title?: string; o
       {on ? "✓ " : ""}
       {children}
     </button>
+  );
+}
+
+/** Harmonic mixing at a glance: both keys on the Camelot wheel, the shift applied, and how they relate. */
+function HarmonicLine({ candidate }: { candidate: PlanCandidate }) {
+  const decks = useStore((s) => s.decks);
+  const f = decks[candidate.foundation.deck].analysis?.key;
+  const v = decks[candidate.vocalDeck].analysis?.key;
+  if (!f || !v) return null;
+  const shifted = shiftedKey(v, candidate.semitones);
+  const rel = keysCompatible(f, shifted);
+  const label = rel === "perfect" ? (f.camelot === shifted.camelot ? "same key" : "relative keys") : rel === "good" ? "neighbouring keys" : "keys clash";
+  const color = rel === "clash" ? "#ffd60a" : "#30d158";
+  return (
+    <div className="flex flex-wrap items-center gap-x-2 gap-y-1 text-[11.5px] text-text-2" data-harmonic title="Harmonic mixing: keys next to each other on the Camelot wheel (same number, or one step) blend; the vocal is pitch-shifted by whole semitones to get there when needed">
+      <span className="label">Keys</span>
+      <span className="font-mono tabular-nums">
+        <b style={{ color: DECK_COLORS[candidate.foundation.deck].main }}>{candidate.foundation.deck}</b> {f.name} {f.camelot}
+      </span>
+      <span className="text-muted">·</span>
+      <span className="font-mono tabular-nums">
+        <b style={{ color: DECK_COLORS[candidate.vocalDeck].main }}>{candidate.vocalDeck}</b> {v.name} {v.camelot}
+        {candidate.semitones ? ` → ${candidate.semitones > 0 ? "+" : ""}${candidate.semitones} st → ${shifted.name} ${shifted.camelot}` : ""}
+      </span>
+      <span className="chip" style={{ color, borderColor: `${color}66` }}>
+        {label}
+      </span>
+    </div>
   );
 }
 
@@ -136,8 +165,10 @@ export default function Advisor() {
             <Meter label="Phrases" value={selected.breakdown.phrases} title="Clips start and end on sung phrases instead of cutting through them" />
             <Meter label="Energy" value={selected.breakdown.energy} title="Loud vocal parts land in hook slots, quieter ones in breakdowns" />
             <Meter label="Stretch" value={selected.breakdown.stretch} title="How little time-stretching the tempo match needs" />
+            {selected.breakdown.phrasing !== undefined && <Meter label="Phrasing" value={selected.breakdown.phrasing} title="Parts start on an 8- or 16-bar phrase of their own song and land on a phrase of the foundation, so the incoming part arrives where the outgoing one does" />}
           </div>
 
+          <HarmonicLine candidate={selected} />
           <p className={`text-sm leading-relaxed ${claudeBusy ? "thinking-dim" : ""}`}>{claudeNotes?.choice === selected.id ? claudeNotes.summary : selected.description}</p>
           {claudeNotes?.choice === selected.id && claudeNotes.knowledge && claudeNotes.knowledge.some((k) => k.recognised) && (
             <div className={`flex flex-col gap-1 text-[12px] text-text-2 ${claudeBusy ? "thinking-dim" : ""}`} data-knowledge>

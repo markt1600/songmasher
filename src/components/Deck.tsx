@@ -2,9 +2,10 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useDnd } from "@/lib/dnd";
 import { useStore } from "@/lib/store";
-import { DECK_COLORS, DEMUCS_VARIANTS, STEM_LABELS, type DeckId, type StemKey } from "@/lib/types";
+import { DECK_COLORS, DEMUCS_VARIANTS, FLAT_EQ, STEM_LABELS, type DeckId, type StemKey } from "@/lib/types";
 import { shiftedKey } from "@/lib/audio/music";
 import Waveform from "./Waveform";
+import { EqControl } from "./Timeline";
 import { Icon, Segmented, Stepper } from "./ui";
 
 const STEM_ORDER: StemKey[] = ["full", "instrumental", "vocals", "drums", "melodic"];
@@ -269,6 +270,10 @@ export default function Deck({ id }: { id: DeckId }) {
                 <div className="flex flex-col gap-1.5 min-w-[120px]">
                   <span className="label">Level</span>
                   <input type="range" min={0} max={1.5} step={0.01} value={project.foundation!.gain} onChange={(e) => setFoundation(id, { gain: parseFloat(e.target.value) })} className="mt-[11px]" />
+                </div>
+                <div className="flex flex-col gap-1.5">
+                  <span className="label">Foundation EQ</span>
+                  <EqControl compact value={project.foundation!.eq ?? FLAT_EQ} onChange={(eq) => setFoundation(id, { eq })} />
                 </div>
               </>
             )}

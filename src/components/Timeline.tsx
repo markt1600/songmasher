@@ -1,10 +1,11 @@
 "use client";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { barToTime } from "@/lib/audio/analysis";
 import { engine, useStore } from "@/lib/store";
-import { CLIP_LANES, DECK_COLORS, STEM_LABELS, type AutomationPoint, type Clip, type DeckId, type StemKey } from "@/lib/types";
+import { CLIP_LANES, DECK_COLORS, EQ_KILL, FLAT_EQ, STEM_LABELS, type AutomationPoint, type Clip, type DeckId, type Eq, type StemKey } from "@/lib/types";
 import { automationValue, foundationIntervals } from "@/lib/engine/engine";
 import { useDnd } from "@/lib/dnd";
+import { phraseStrength } from "@/lib/mash/planner";
 import { Icon, Stepper } from "./ui";
 import { SECTION_COLORS } from "./SectionLane";
 
@@ -35,7 +36,9 @@ export default function Timeline() {
   const soloClipId = useStore((s) => s.soloClipId);
   const levelMatch = project.levelMatch !== false;
   const tightTiming = project.tightTiming !== false;
-  const { setZoom, selectClip, soloClip, setLevelMatch, setTightTiming, updateClip, removeSelected, repeatSelected, setLengthBars, seek, clearClips, setFoundation, clearFoundation, addClip, moveClips, nudgeClip, autoAlignClip, setLoopRegion, addCue, updateCue, removeCue, loopSelected } = useStore();
+  const autoEq = project.autoEq !== false;
+  const autoEqCuts = useStore((s) => s.autoEqCuts);
+  const { setZoom, selectClip, soloClip, setLevelMatch, setTightTiming, setAutoEq, setPhraseLock, updateClip, removeSelected, repeatSelected, setLengthBars, seek, clearClips, setFoundation, clearFoundation, addClip, moveClips, nudgeClip, autoAlignClip, setLoopRegion, addCue, updateCue, removeCue, loopSelected } = useStore();
   const scrollRef = useRef<HTMLDivElement>(null);
   const lanesRef = useRef<HTMLDivElement>(null);
   const register = useDnd((s) => s.register);
@@ -45,6 +48,28 @@ export default function Timeline() {
   const totalBeats = project.lengthBars * 4;
   const width = totalBeats * zoom;
   const spb = 60 / project.masterBpm;
+
+  const phraseLock = project.phraseLock !== false;
+  /** Timeline beats where the foundation begins a phrase (8-bar strong, 4-bar weak), from its own sections. */
+  const phraseBeats = useMemo(() => {
+    const out: { beat: number; strong: boolean }[] = [];
+    const f = project.foundation;
+    const a = f ? decks[f.deckId].analysis : null;
+    for (let bar = 0; bar <= project.lengthBars; bar++) {
+      const st = a && f ? phraseStrength(a, f.startBar + bar) : bar % 8 === 0 ? 1 : bar % 4 === 0 ? 0.5 : 0;
+      if (st > 0) out.push({ beat: bar * 4, strong: st >= 1 });
+    }
+    return out;
+  }, [project.foundation, project.lengthBars, decks]);
+  const snapToPhrase = useCallback(
+    (beat: number) => {
+      if (!phraseBeats.length) return Math.round(beat / 4) * 4;
+      let best = phraseBeats[0].beat;
+      for (const p of phraseBeats) if (Math.abs(p.beat - beat) < Math.abs(best - beat)) best = p.beat;
+      return best;
+    },
+    [phraseBeats],
+  );
 
   useEffect(() => {
     const el = scrollRef.current;
@@ -64,12 +89,11 @@ export default function Timeline() {
         // The clip starts where the pointer is (its left edge follows the cursor), snapped to the bar,
         // or to the beat with the option key held.
         const rawBeat = Math.max(0, (x - r.left) / zoom);
-        const snap = altKey ? 1 : 4;
-        const beat = Math.round(rawBeat / snap) * snap;
+        const beat = altKey ? Math.round(rawBeat) : phraseLock ? snapToPhrase(rawBeat) : Math.round(rawBeat / 4) * 4;
         const bars = payload.lengthBeats / 4;
         return lane === 0
           ? { lane, beat: 0, label: `Use as foundation from bar ${payload.srcBar + 1}` }
-          : { lane, beat, label: `Lane ${lane} · bar ${Math.floor(beat / 4) + 1} · ${bars} bar${bars === 1 ? "" : "s"}${altKey ? " · beat snap" : " · snaps to bar (⌥ for beats)"}` };
+          : { lane, beat, label: `Lane ${lane} · bar ${Math.floor(beat / 4) + 1} · ${bars} bar${bars === 1 ? "" : "s"}${altKey ? " · beat snap" : phraseLock ? " · on the phrase (⌥ for beats)" : " · snaps to bar (⌥ for beats)"}` };
       },
       onDrop: (payload, info) => {
         if (payload.kind !== "selection" || info.lane === undefined) return;
@@ -86,7 +110,7 @@ export default function Timeline() {
         });
       },
     });
-  }, [register, zoom, setFoundation, addClip]);
+  }, [register, zoom, setFoundation, addClip, phraseLock, snapToPhrase]);
 
   useEffect(() => {
     const el = scrollRef.current;
@@ -183,6 +207,28 @@ export default function Timeline() {
           </span>{" "}
           Tight timing
         </button>
+        <button
+          className={`btn btn-sm ${autoEq ? "text-accent-2 border-[#7c6cff]/60" : "text-muted"}`}
+          onClick={() => setAutoEq(!autoEq)}
+          aria-pressed={autoEq}
+          title={autoEq ? "EQ mixing is on: parts layered over the foundation give up their lows (the beat owns the bass, so two basslines never fight) and layered vocals lose their rumble. Your own EQ settings apply on top. Click to leave every part's lows alone." : "EQ mixing is off: parts play with only your own EQ settings. Click to cut the lows of layered parts automatically."}
+        >
+          <span style={{ opacity: autoEq ? 1 : 0.25, display: "inline-flex" }}>
+            <Icon name="check" size={11} />
+          </span>{" "}
+          EQ mixing
+        </button>
+        <button
+          className={`btn btn-sm ${phraseLock ? "text-accent-2 border-[#7c6cff]/60" : "text-muted"}`}
+          onClick={() => setPhraseLock(!phraseLock)}
+          aria-pressed={phraseLock}
+          title={phraseLock ? "Phrase lock is on: drops and moves snap to the foundation's 4- and 8-bar phrases (marked on the grid), so an incoming part lands where the outgoing one does. Hold ⌥ for beats. Click to snap to any bar instead." : "Phrase lock is off: drops and moves snap to any bar. Click to snap to the foundation's 4- and 8-bar phrases."}
+        >
+          <span style={{ opacity: phraseLock ? 1 : 0.25, display: "inline-flex" }}>
+            <Icon name="check" size={11} />
+          </span>{" "}
+          Phrase lock
+        </button>
         <div className="flex-1" />
         {selected.length > 0 && (
           <div className="flex flex-wrap items-center gap-1.5 rounded-[9px] border border-white/[0.08] bg-white/[0.05] px-2 py-1 fade-in">
@@ -202,6 +248,7 @@ export default function Timeline() {
                 </button>
                 <FadeControl label="In" value={one.fadeIn ?? 0} onChange={(v) => updateClip(one.id, { fadeIn: v })} />
                 <FadeControl label="Out" value={one.fadeOut ?? 0} onChange={(v) => updateClip(one.id, { fadeOut: v })} />
+                <EqControl value={one.eq ?? FLAT_EQ} onChange={(eq) => updateClip(one.id, { eq })} autoLow={autoEqCuts[one.id]} />
                 <div className="inline-flex items-center gap-0.5" title="Nudge the clip's start inside the source, in milliseconds, to land its first hit on the beat">
                   <button className="btn btn-xs" onClick={() => nudgeClip(one.id, -5)}>
                     −5
@@ -345,6 +392,10 @@ export default function Timeline() {
             {rulerMarks.map((m) => (
               <div key={m.beat} className="absolute top-0 bottom-0 border-l pointer-events-none" style={{ left: m.beat * zoom, borderColor: m.strong ? "rgba(255,255,255,0.1)" : "rgba(255,255,255,0.04)" }} />
             ))}
+            {phraseLock &&
+              phraseBeats.map((p) => (
+                <div key={`ph-${p.beat}`} className="absolute top-0 bottom-0 pointer-events-none" data-phrase={p.strong ? "8" : "4"} style={{ left: p.beat * zoom, width: 0, borderLeft: `${p.strong ? 2 : 1}px ${p.strong ? "solid" : "dashed"} rgba(124,108,255,${p.strong ? 0.35 : 0.18})` }} />
+              ))}
             <div className="absolute left-0 right-0 border-b border-white/6 pointer-events-none" style={{ top: 0, height: LANE_H, background: "rgba(255,255,255,0.015)" }} />
             <div className="absolute left-0 right-0 border-b border-white/6" style={{ top: LANE_H, height: AUTO_H }}>
               <AutomationLane param={autoParam} points={project.automation[autoParam]} zoom={zoom} totalBeats={totalBeats} />
@@ -363,7 +414,7 @@ export default function Timeline() {
             )}
 
             {project.clips.map((c) => (
-              <ClipView key={c.id} clip={c} zoom={zoom} selected={selectedClipIds.includes(c.id)} selectedIds={selectedClipIds} solo={soloClipId === c.id} dimmed={soloClipId !== null && soloClipId !== c.id} onSelect={(add) => selectClip(c.id, { add })} onMove={(db, dl) => moveClips(selectedClipIds.includes(c.id) ? selectedClipIds : [c.id], db, dl)} onResize={(len) => updateClip(c.id, { lengthBeats: len })} onRepeat={repeatSelected} onSolo={() => void soloClip(c.id)} />
+              <ClipView key={c.id} clip={c} zoom={zoom} selected={selectedClipIds.includes(c.id)} selectedIds={selectedClipIds} solo={soloClipId === c.id} dimmed={soloClipId !== null && soloClipId !== c.id} snapBeat={phraseLock ? snapToPhrase : undefined} onSelect={(add) => selectClip(c.id, { add })} onMove={(db, dl) => moveClips(selectedClipIds.includes(c.id) ? selectedClipIds : [c.id], db, dl)} onResize={(len) => updateClip(c.id, { lengthBeats: len })} onRepeat={repeatSelected} onSolo={() => void soloClip(c.id)} />
             ))}
 
             {dropHover && dragPayload?.kind === "selection" && dropHover.lane !== undefined && (
@@ -396,6 +447,39 @@ export default function Timeline() {
         </div>
       </div>
     </section>
+  );
+}
+
+const EQ_STEPS = [-24, -18, -12, -6, -3, 0, 3, 6];
+/** Three small dB steppers (low / mid / high) with a kill toggle on the lows. */
+export function EqControl({ value, onChange, autoLow, compact }: { value: Eq; onChange: (eq: Eq) => void; autoLow?: number; compact?: boolean }) {
+  const band = (key: keyof Eq, label: string) => {
+    const v = value[key];
+    const idx = EQ_STEPS.findIndex((x) => x >= v);
+    const i = idx < 0 ? EQ_STEPS.length - 1 : idx;
+    const set = (n: number) => onChange({ ...value, [key]: n });
+    return (
+      <div className="inline-flex items-center gap-0.5" title={`${label} band${key === "low" && autoLow ? ` · EQ mixing adds ${autoLow} dB on top` : ""}`}>
+        <span className="text-[10px] text-muted mr-0.5">{label}</span>
+        <button className="btn btn-xs !px-1" onClick={() => set(EQ_STEPS[Math.max(0, i - 1)])} disabled={i === 0} aria-label={`${label} down`}>
+          <Icon name="minus" size={9} />
+        </button>
+        <button className={`font-mono tabular-nums text-[10.5px] w-[30px] text-center rounded ${v <= EQ_KILL ? "text-[#ff6b61]" : v !== 0 ? "text-accent-2" : "text-text-2"}`} onClick={() => set(v <= EQ_KILL ? 0 : EQ_KILL)} title={v <= EQ_KILL ? "Killed · click to restore" : "Click to kill this band"}>
+          {v <= EQ_KILL ? "kill" : `${v > 0 ? "+" : ""}${v}`}
+        </button>
+        <button className="btn btn-xs !px-1" onClick={() => set(EQ_STEPS[Math.min(EQ_STEPS.length - 1, i + 1)])} disabled={i === EQ_STEPS.length - 1} aria-label={`${label} up`}>
+          <Icon name="plus" size={9} />
+        </button>
+      </div>
+    );
+  };
+  return (
+    <div className={`inline-flex items-center ${compact ? "gap-1.5" : "gap-2"} rounded-[8px] inset px-1.5 h-[28px]`} data-eq>
+      {!compact && <span className="label mr-0.5">EQ</span>}
+      {band("low", "Low")}
+      {band("mid", "Mid")}
+      {band("high", "High")}
+    </div>
   );
 }
 
@@ -615,10 +699,11 @@ function FoundationBlock({ deckId, stem, startBar, zoom, widthBeats, masterBpm, 
   );
 }
 
-function ClipView({ clip, zoom, selected, selectedIds, solo, dimmed, onSelect, onMove, onResize, onRepeat, onSolo }: { clip: Clip; zoom: number; selected: boolean; selectedIds: string[]; solo: boolean; dimmed: boolean; onSelect: (add: boolean) => void; onMove: (deltaBeats: number, deltaLane: number) => void; onResize: (len: number) => void; onRepeat: () => void; onSolo: () => void }) {
+function ClipView({ clip, zoom, selected, selectedIds, solo, dimmed, snapBeat, onSelect, onMove, onResize, onRepeat, onSolo }: { clip: Clip; zoom: number; selected: boolean; selectedIds: string[]; solo: boolean; dimmed: boolean; snapBeat?: (beat: number) => number; onSelect: (add: boolean) => void; onMove: (deltaBeats: number, deltaLane: number) => void; onResize: (len: number) => void; onRepeat: () => void; onSolo: () => void }) {
   const deck = useStore((s) => s.decks[clip.deckId]);
   const trimDb = useStore((s) => s.levelTrims[clip.id]);
   const timingMs = useStore((s) => s.timingShifts[clip.id]);
+  const autoLow = useStore((s) => s.autoEqCuts[clip.id]);
   const color = DECK_COLORS[clip.deckId];
   const [drag, setDrag] = useState<{ mode: "move" | "resize"; startX: number; startY: number; origLen: number; plain: boolean } | null>(null);
   const [live, setLive] = useState<{ dBeats: number; dLane: number; len: number } | null>(null);
@@ -639,7 +724,9 @@ function ClipView({ clip, zoom, selected, selectedIds, solo, dimmed, onSelect, o
     const snap = e.altKey ? 0.25 : 1;
     if (drag.mode === "move") {
       const dLane = Math.round((e.clientY - drag.startY) / LANE_H);
-      setLive({ dBeats: Math.round(dBeatsRaw / snap) * snap, dLane, len: drag.origLen });
+      // phrase lock: the clip's start lands on the nearest foundation phrase (option key = quarter beats)
+      const dBeats = !e.altKey && snapBeat ? snapBeat(clip.startBeat + dBeatsRaw) - clip.startBeat : Math.round(dBeatsRaw / snap) * snap;
+      setLive({ dBeats, dLane, len: drag.origLen });
     } else {
       setLive({ dBeats: 0, dLane: 0, len: Math.max(1, Math.round((drag.origLen + dBeatsRaw) / snap) * snap) });
     }
@@ -727,8 +814,13 @@ function ClipView({ clip, zoom, selected, selectedIds, solo, dimmed, onSelect, o
           {clip.mode === "swap" ? " · swap" : ""}
           {clip.offsetMs ? ` · ${clip.offsetMs > 0 ? "+" : ""}${clip.offsetMs}ms` : ""}
         </span>
-        {((trimDb !== undefined && Math.abs(trimDb) >= 0.5) || (timingMs !== undefined && Math.abs(timingMs) >= 2)) && (
+        {((trimDb !== undefined && Math.abs(trimDb) >= 0.5) || (timingMs !== undefined && Math.abs(timingMs) >= 2) || autoLow !== undefined || (clip.eq && (clip.eq.low || clip.eq.mid || clip.eq.high))) && (
           <span className="ml-auto shrink-0 flex items-center gap-1">
+            {(autoLow !== undefined || (clip.eq && (clip.eq.low || clip.eq.mid || clip.eq.high))) && (
+              <span className="font-mono tabular-nums text-[9.5px] px-1 rounded bg-black/25 text-black/80" title={`${autoLow !== undefined ? `EQ mixing cut the lows by ${Math.abs(autoLow)} dB so the foundation keeps the bass. ` : ""}${clip.eq && (clip.eq.low || clip.eq.mid || clip.eq.high) ? `Your EQ: low ${clip.eq.low} · mid ${clip.eq.mid} · high ${clip.eq.high} dB` : ""}`}>
+                {autoLow !== undefined ? `low ${autoLow + (clip.eq?.low ?? 0)}` : `EQ ${clip.eq!.low}/${clip.eq!.mid}/${clip.eq!.high}`}
+              </span>
+            )}
             {timingMs !== undefined && Math.abs(timingMs) >= 2 && (
               <span className="font-mono tabular-nums text-[9.5px] px-1 rounded bg-black/25 text-black/80" title={`Tight timing moved this clip ${Math.abs(timingMs)} ms ${timingMs > 0 ? "later" : "earlier"} to sit on the foundation's real beats`}>
                 {timingMs > 0 ? "+" : ""}

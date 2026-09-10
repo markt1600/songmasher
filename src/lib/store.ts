@@ -256,6 +256,12 @@ interface Store {
   levelTrims: Record<string, number>;
   /** turn automatic beat-tightening on or off for this arrangement */
   setTightTiming: (on: boolean) => void;
+  /** turn EQ mixing (automatic low cuts on layered parts) on or off for this arrangement */
+  setAutoEq: (on: boolean) => void;
+  /** automatic low cuts (dB) the engine applied at the last play, by clip id */
+  autoEqCuts: Record<string, number>;
+  /** phrase lock: snap drops and moves to the foundation's 4-bar phrase grid */
+  setPhraseLock: (on: boolean) => void;
   /** ms each clip was nudged onto the foundation's real beats at the last play */
   timingShifts: Record<string, number>;
   setZoom: (z: number) => void;
@@ -1321,6 +1327,7 @@ export const useStore = create<Store>((set, get) => {
     soloClipId: null,
     levelTrims: {},
     timingShifts: {},
+    autoEqCuts: {},
     planHistory: [],
     claudeBusy: false,
     claudeError: null,
@@ -2131,6 +2138,16 @@ export const useStore = create<Store>((set, get) => {
       void restartIfPlaying();
     },
 
+    setAutoEq: (on) => {
+      setProject({ ...get().project, autoEq: on });
+      if (!on) set({ autoEqCuts: {} });
+      void restartIfPlaying();
+    },
+
+    setPhraseLock: (on) => {
+      setProject({ ...get().project, phraseLock: on });
+    },
+
     setZoom: (z) => set({ zoom: Math.max(4, Math.min(60, z)) }),
 
     separateQuick: async (deckId) => {
@@ -2221,7 +2238,7 @@ export const useStore = create<Store>((set, get) => {
       try {
         engine.onEnded = () => set({ playing: false });
         await engine.play(s.project, decks, start, s.transport, (label, value) => set({ busy: { label, value } }));
-        set({ playing: true, busy: null, levelTrims: engine.trimsDb(), timingShifts: engine.timingMs() });
+        set({ playing: true, busy: null, levelTrims: engine.trimsDb(), timingShifts: engine.timingMs(), autoEqCuts: engine.autoEqDb() });
       } catch (err) {
         set({ busy: null, playing: false });
         get().showToast(`Playback failed: ${(err as Error).message}`);

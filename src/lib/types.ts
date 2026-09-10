@@ -55,7 +55,17 @@ export interface Clip {
   fadeOut?: number;
   /** fine nudge of the source position, in milliseconds (positive = start later in the source) */
   offsetMs?: number;
+  /** three-band EQ in dB (low shelf 220 Hz, mid peak 1.2 kHz, high shelf 5 kHz); 0 = flat, -24 = killed */
+  eq?: Eq;
 }
+
+export interface Eq {
+  low: number;
+  mid: number;
+  high: number;
+}
+export const FLAT_EQ: Eq = { low: 0, mid: 0, high: 0 };
+export const EQ_KILL = -24;
 
 export interface AutomationPoint {
   beat: number;
@@ -84,6 +94,7 @@ export interface Foundation {
   stem: StemKey;
   startBar: number;
   gain: number;
+  eq?: Eq;
 }
 
 export interface Project {
@@ -99,6 +110,10 @@ export interface Project {
   levelMatch?: boolean;
   /** nudge each clip onto the foundation's real beats where the grids drift (default on; false switches it off) */
   tightTiming?: boolean;
+  /** EQ mixing: cut the lows of parts layered over the foundation so two basslines never fight (default on) */
+  autoEq?: boolean;
+  /** phrase lock: drops and moves snap to the foundation's 4-bar phrase grid (default on) */
+  phraseLock?: boolean;
 }
 
 export const emptyAutomation = (): Automation => ({ level: [], filter: [] });

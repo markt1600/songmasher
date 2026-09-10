@@ -40,6 +40,22 @@ export interface PlanConstraints {
 }
 
 export type TemplateId = "classic" | "vocal-first" | "call-response" | "extended" | "duet" | "duet-verse";
+/**
+ * How strongly a bar begins a phrase of its song: 1 on an 8-bar boundary counted from the section it
+ * sits in, 0.5 on a 4-bar boundary, 0 elsewhere. DJs mix on these boundaries so the incoming part lands
+ * where the outgoing one does.
+ */
+export function phraseStrength(a: SongAnalysis, bar: number): number {
+  const sections = a.sections ?? [];
+  let start = 0;
+  for (const sec of sections) if (sec.startBar <= bar + 1e-6 && sec.startBar > start) start = sec.startBar;
+  const d = Math.round(bar - start);
+  if (d < 0) return 0;
+  if (d % 8 === 0) return 1;
+  if (d % 4 === 0) return 0.5;
+  return 0;
+}
+
 /** fvocal = the foundation song's own singing, in place over its own instrumental */
 type SlotKind = "hook" | "verse" | "swap" | "fvocal" | "feature";
 interface Slot {
@@ -74,7 +90,7 @@ export interface PlanCandidate {
   lengthBars: number;
   clips: PlannedClip[];
   score: number;
-  breakdown: { harmony: number; phrases: number; energy: number; stretch: number };
+  breakdown: { harmony: number; phrases: number; energy: number; stretch: number; phrasing?: number };
   description: string;
 }
 
@@ -125,6 +141,8 @@ export interface VocalSegment {
   audioBeats: number;
   kind: "hook" | "verse";
   energy: number;
+  /** 1 when the part starts on an 8-bar phrase of its own song (relative to its section), 0.5 on a 4-bar, else 0 */
+  phraseStart: number;
   phraseFit: number; // 1 = starts and ends on phrase boundaries
   label: string;
 }
@@ -212,7 +230,8 @@ export function vocalSegments(song: PlannerSong, bars: number): VocalSegment[] {
         if (energy < 0.12) continue;
         if (!audible(anchorBar, best.spanBars)) continue; // the mix itself is silent here: the profile cannot be right
         const srcStartBeat = anchorBar * 4 - pickupBeats;
-        const slotBars = best.spanBars % 2 === 1 ? best.spanBars + 1 : best.spanBars; // parts land on even bars
+        // Parts occupy whole phrases (2, 4, 8, 12 bars...) so the next part enters on a phrase boundary.
+        const slotBars = best.spanBars <= 2 ? 2 : Math.ceil(best.spanBars / 4) * 4;
         // Tail after the last word: up to 0.6 beat of room for the note to ring, but never into the next line.
         const following = sorted.find((q) => q.startBeat > best.endBeat + 0.1);
         const gap = following ? following.startBeat - best.endBeat : 8;
@@ -224,6 +243,7 @@ export function vocalSegments(song: PlannerSong, bars: number): VocalSegment[] {
           audioBeats: best.endBeat - srcStartBeat + tail,
           kind: kindOf(anchorBar, energy),
           energy,
+          phraseStart: phraseStrength(a, anchorBar),
           phraseFit: (best.clean ? 1 : 0.7) - best.diff * 0.1,
           label: `${song.name} bars ${anchorBar + 1}–${anchorBar + best.spanBars}`,
         });
@@ -258,7 +278,7 @@ export function vocalSegments(song: PlannerSong, bars: number): VocalSegment[] {
         }
       }
     }
-    segs.push({ srcBar: b, bars, pickupBeats: 0, audioBeats, kind: kindOf(b, energy), energy, phraseFit, label: `${song.name} bars ${b + 1}–${b + bars}` });
+    segs.push({ srcBar: b, bars, pickupBeats: 0, audioBeats, kind: kindOf(b, energy), energy, phraseStart: phraseStrength(a, b), phraseFit, label: `${song.name} bars ${b + 1}–${b + bars}` });
   }
   return segs;
 }
@@ -424,6 +444,7 @@ export function planMashup(songs: [PlannerSong, PlannerSong], constraints: PlanC
         let harmony = 0;
         let phrases = 0;
         let energyFit = 0;
+        let phrasingSum = 0;
         let slotTotal = 0;
         let n = 0;
         const used = new Set<number>();
@@ -514,7 +535,10 @@ export function planMashup(songs: [PlannerSong, PlannerSong], constraints: PlanC
             const energyTarget = slot.kind === "hook" ? 0.9 : 0.45;
             const eFit = 1 - Math.min(1, Math.abs(seg.energy - energyTarget) / 0.6);
             // Cutting into a line is the most audible mistake a mashup can make: phrases weigh heavily.
-            const score = fit * 0.4 + seg.phraseFit * 0.3 + eFit * 0.2 + kindBonus + reuse;
+            // Phrasing: the part should start on a phrase of its own song AND land on a phrase of the foundation.
+            const landing = phraseStrength(fa, fStart + slotStart);
+            const phrasing = 0.5 * seg.phraseStart + 0.5 * landing;
+            const score = fit * 0.4 + seg.phraseFit * 0.3 + eFit * 0.2 + kindBonus + reuse + 0.12 * phrasing - (landing === 0 ? 0.05 : 0);
             if (!best || score > best.score) best = { seg, fit, score };
           }
           if (!best) {
@@ -527,6 +551,7 @@ export function planMashup(songs: [PlannerSong, PlannerSong], constraints: PlanC
           harmony += best.fit;
           phrases += seg.phraseFit;
           energyFit += 1 - Math.min(1, Math.abs(seg.energy - (slot.kind === "hook" ? 0.85 : 0.45)) / 0.7);
+          phrasingSum += 0.5 * seg.phraseStart + 0.5 * phraseStrength(fa, fStart + slotStart);
           slotTotal += best.score;
           n++;
           const label = slot.kind === "hook" ? (repeated ? "Hook again" : "Hook") : "Breakdown";
@@ -562,7 +587,7 @@ export function planMashup(songs: [PlannerSong, PlannerSong], constraints: PlanC
         energyFit /= n;
         // Rank candidates by the same blended slot score used to choose their parts, plus global terms.
         const missing = slots.length - placed;
-        const score = (slotTotal / n) * 0.85 + (1 - stretchPenalty) * 0.1 - Math.abs(shift) * 0.015 + (fStart % 4 === 0 ? 0.02 : 0) + (harmony < 0.45 ? -0.2 : 0) - missing * 0.15
+        const score = (slotTotal / n) * 0.85 + (1 - stretchPenalty) * 0.1 - Math.abs(shift) * 0.015 + 0.03 * phraseStrength(fa, fStart) + (harmony < 0.45 ? -0.2 : 0) - missing * 0.15
           // When the user asked for both singers, prefer templates that actually give the other song a turn.
           + (both && (tid === "duet" || tid === "duet-verse") ? 0.05 : 0);
         results.push({
@@ -575,7 +600,7 @@ export function planMashup(songs: [PlannerSong, PlannerSong], constraints: PlanC
           lengthBars: length,
           clips,
           score,
-          breakdown: { harmony, phrases, energy: energyFit, stretch: 1 - stretchPenalty },
+          breakdown: { harmony, phrases, energy: energyFit, stretch: 1 - stretchPenalty, phrasing: n > 0 ? phrasingSum / n : 0 },
           description: (feature ? `Opens with ${feature.label ?? "the signature intro"} of ${feature.deck === F.deck ? F.name : V.name}; then ` : "") + describeCandidate(tid, F, V, fStart, shift, harmony),
         });
       }

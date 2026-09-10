@@ -37,7 +37,7 @@ const CandidateSchema = z.object({
   template: TemplateEnum,
   description: z.string(),
   score: z.number(),
-  breakdown: z.object({ harmony: z.number(), phrases: z.number(), energy: z.number(), stretch: z.number() }),
+  breakdown: z.object({ harmony: z.number(), phrases: z.number(), energy: z.number(), stretch: z.number(), phrasing: z.number().optional() }),
   foundation: z.object({ deck: Deck, startBar: z.number(), stem: StemEnum }),
   vocalDeck: Deck,
   semitones: z.number(),
