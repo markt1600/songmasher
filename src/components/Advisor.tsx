@@ -8,7 +8,7 @@ import { Icon } from "./ui";
 
 const KIND_ICON: Record<string, string> = { foundation: "anchor", tempo: "loop", key: "music", hook: "scissors", verse: "scissors", beat: "anchor", info: "check" };
 /** Every constraint explicitly cleared: the planner falls back to its own choices. */
-const RESET: PlanConstraints = { foundation: undefined, lengthBars: undefined, vocalEntryBar: undefined, hookBars: undefined, energy: undefined, maxShift: undefined, template: undefined, vocals: undefined, mustInclude: undefined, knowledge: undefined };
+const RESET: PlanConstraints = { foundation: undefined, lengthBars: undefined, vocalEntryBar: undefined, hookBars: undefined, energy: undefined, maxShift: undefined, template: undefined, vocals: undefined, mustInclude: undefined, knowledge: undefined, buildups: undefined };
 
 /** An adjust chip that stays lit while its constraint is active; clicking again clears it. */
 function Chip({ on, title, onClick, children }: { on: boolean; title?: string; onClick: () => void; children: ReactNode }) {
@@ -298,6 +298,13 @@ export default function Advisor() {
             <button className="btn btn-xs" onClick={() => quick({ lengthBars: Math.max(16, (selected.lengthBars || 32) - 12) }, "make it shorter")}>Shorter</button>
             <Chip on={constraints.foundation !== undefined} title={constraints.foundation ? `Beat pinned to ${decks[constraints.foundation].name}` : "Swap which song carries the beat"} onClick={() => (constraints.foundation ? quick({ foundation: undefined }, "let the planner choose which song carries the beat") : quick({ foundation: selected.vocalDeck }, "swap the roles of the two songs"))}>
               Swap roles
+            </Chip>
+            <Chip
+              on={constraints.buildups !== false}
+              title="Build into every hook: the singer's own lead-in (pre-chorus, end of the verse) when it exists, plus a riser on the foundation (high-pass sweep and a level dip) that releases on the hook's downbeat. Off: parts start straight on the hook."
+              onClick={() => (constraints.buildups === false ? quick({ buildups: true }, "build into the hooks again") : quick({ buildups: false }, "no build-ups; go straight into the hooks"))}
+            >
+              Build-ups
             </Chip>
             {config.ai && (
               <Chip

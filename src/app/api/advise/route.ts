@@ -55,6 +55,8 @@ const ConstraintsSchema = z.object({
   maxShift: z.number().int().min(0).max(6).nullable(),
   template: TemplateEnum.nullable(),
   vocals: z.enum(["one", "both"]).nullable(),
+  /** false = no build-ups (lead-in phrases and risers before the hooks); null = unchanged */
+  buildups: z.boolean().nullable(),
   /** a signature moment the arrangement must open with: that deck's full mix from srcBar for `bars` */
   mustInclude: z.object({ deck: Deck, srcBar: z.number().int().min(0), bars: z.number().int().min(2).max(16), label: z.string().max(300) }).nullable(),
 });
@@ -108,6 +110,7 @@ Respond with:
   constraints (e.g. "bring the vocal in earlier" -> vocalEntryBar 4 or template vocal-first; "make it longer" ->
   lengthBars; "less pitch shifting" -> maxShift 1; "more energy" -> energy higher, template classic with hookBars 8;
   "swap the roles" -> foundation set to the other deck; "use both singers" / "let them trade lines" -> vocals "both";
+  "no build-up" / "straight into the hook" -> buildups false; "more build-up" / "bigger drop" -> buildups true;
   "only one vocal" -> vocals "one"). Otherwise null. Unchanged fields null.
 - summary: 2-3 sentences a producer would say about the chosen plan: what sits under what, where the hook lands,
   why it works, and any caveat (e.g. one breakdown clip fits less well).

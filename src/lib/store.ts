@@ -126,6 +126,8 @@ export interface ClaudePlan {
   stemAdvice?: { deck: DeckId; variant: DemucsVariant; reason: string }[];
   /** edits the app's own rules made to the plan */
   notes?: string[];
+  /** foundation automation shipped with the plan (risers and dips that build into the hooks) */
+  automation?: { level: AutomationPoint[]; filter: AutomationPoint[] };
 }
 
 export interface ClaudeNotes {
@@ -1215,6 +1217,7 @@ export const useStore = create<Store>((set, get) => {
     masterBpm: c.masterBpm,
     lengthBars: c.lengthBars,
     pitchShift: c.semitones ? { deck: c.vocalDeck, semitones: c.semitones, reason: "" } : null,
+    automation: c.automation,
     arrangement: c.clips.map((k, i) => ({
       deck: k.deck,
       srcBar: k.srcBar,
@@ -2541,7 +2544,9 @@ export const useStore = create<Store>((set, get) => {
       }
       // A loop region from earlier work would hold playback inside a slice of the new arrangement.
       const hadRegion = !!st.project.loopRegion;
-      setProject({ ...st.project, clips, lengthBars, loopRegion: null, cues: st.project.cues.filter((c) => c.beat <= lengthBars * 4) });
+      // The plan's own build-ups (risers into the hooks) replace any earlier automation; without them the lanes are cleared.
+      const automation = plan.automation ? { level: [...plan.automation.level].sort((a, b) => a.beat - b.beat), filter: [...plan.automation.filter].sort((a, b) => a.beat - b.beat) } : emptyAutomation();
+      setProject({ ...st.project, clips, lengthBars, loopRegion: null, automation, cues: st.project.cues.filter((c) => c.beat <= lengthBars * 4) });
       set({ selectedClipIds: [] });
       engine.seek(0);
       g.showToast(`${checked.notes.length ? "Applied the plan with a few rule fixes" : "Applied the plan"} · ${lengthBars} bars${hadRegion ? " · loop region cleared" : ""}`);

@@ -35,6 +35,8 @@ export interface PlanConstraints {
   mustInclude?: { deck: DeckId; srcBar: number; bars: number; label?: string };
   /** false: the advisor should not use what it knows about the songs (no signature moments) */
   knowledge?: boolean;
+  /** false: no build-ups (lead-in phrases, risers and drops) before the hooks */
+  buildups?: boolean;
   /** "both": the foundation song's own vocal takes turns with the other song's (duet templates) */
   vocals?: "one" | "both";
 }
@@ -57,7 +59,7 @@ export function phraseStrength(a: SongAnalysis, bar: number): number {
 }
 
 /** fvocal = the foundation song's own singing, in place over its own instrumental */
-type SlotKind = "hook" | "verse" | "swap" | "fvocal" | "feature";
+type SlotKind = "hook" | "verse" | "swap" | "fvocal" | "feature" | "lead";
 interface Slot {
   kind: SlotKind;
   startBar: number; // timeline
@@ -91,6 +93,8 @@ export interface PlanCandidate {
   clips: PlannedClip[];
   score: number;
   breakdown: { harmony: number; phrases: number; energy: number; stretch: number; phrasing?: number };
+  /** foundation automation that builds tension into each hook (filter riser + level dip) */
+  automation?: { level: { beat: number; value: number }[]; filter: { beat: number; value: number }[] };
   description: string;
 }
 
@@ -342,6 +346,26 @@ function template(id: TemplateId, c: PlanConstraints, availableBars: number, lea
       push("hook", hook);
       break;
   }
+  // Build-ups: a 4-bar lead-in before every run of hooks. It carries the singer's own pre-chorus when
+  // there is one, and always a riser on the foundation, so the hook arrives as a release, not a jump.
+  if (c.buildups !== false) {
+    const withLeads: Slot[] = [];
+    let t2 = slots[0]?.startBar ?? 0;
+    for (let i = 0; i < slots.length; i++) {
+      const sl = slots[i];
+      const prevHook = i > 0 && slots[i - 1].kind === "hook";
+      if (sl.kind === "hook" && !prevHook) {
+        const leadBars = Math.min(4, Math.max(2, hook / 2));
+        withLeads.push({ kind: "lead", startBar: t2, bars: leadBars });
+        t2 += leadBars;
+      }
+      withLeads.push({ ...sl, startBar: t2 });
+      t2 += sl.bars;
+    }
+    slots.length = 0;
+    slots.push(...withLeads);
+    t = t2;
+  }
   let length = c.lengthBars ?? t + 4;
   if (length > availableBars) length = Math.max(8, Math.floor(availableBars / 4) * 4);
   return { slots: slots.filter((s) => s.startBar + s.bars <= length), length, hook };
@@ -441,6 +465,8 @@ export function planMashup(songs: [PlannerSong, PlannerSong], constraints: PlanC
       for (const fStart of fStarts) {
         if (fStart + Math.min(tplLength, 12) > fa.totalBars) continue;
         const clips: PlannedClip[] = [];
+        const automation = { level: [] as { beat: number; value: number }[], filter: [] as { beat: number; value: number }[] };
+        let pendingLead: { startBar: number; bars: number } | null = null;
         let harmony = 0;
         let phrases = 0;
         let energyFit = 0;
@@ -457,6 +483,12 @@ export function planMashup(songs: [PlannerSong, PlannerSong], constraints: PlanC
           const slotStart = cursor;
           if (fStart + slotStart + 2 > fa.totalBars) break;
           placed++;
+          if (slot.kind === "lead") {
+            // The foundation plays alone here (or under the singer's own lead-in, decided by the hook that follows).
+            pendingLead = { startBar: slotStart, bars: slot.bars };
+            cursor += slot.bars;
+            continue;
+          }
           if (slot.kind === "feature") {
             if (feature && feature.deck === V.deck) {
               const srcBar = Math.max(0, Math.min(va.totalBars - slot.bars, Math.round(feature.srcBar)));
@@ -554,11 +586,43 @@ export function planMashup(songs: [PlannerSong, PlannerSong], constraints: PlanC
           phrasingSum += 0.5 * seg.phraseStart + 0.5 * phraseStrength(fa, fStart + slotStart);
           slotTotal += best.score;
           n++;
-          const label = slot.kind === "hook" ? (repeated ? "Hook again" : "Hook") : "Breakdown";
+          let label = slot.kind === "hook" ? (repeated ? "Hook again" : "Hook") : "Breakdown";
           // A pickup cannot start before the timeline: trim it when the part sits at bar 0.
           let startBeat = slotStart * 4 - seg.pickupBeats;
           let srcBar = seg.srcBar;
           let lengthBeats = layered ? seg.audioBeats : seg.bars * 4 + seg.pickupBeats;
+          // Build-up into a hook: when the singer's own lead-in (a pre-chorus, the end of the verse) sits
+          // right before this hook in the source, bring it in over the lead slot so the melody resolves
+          // into the hook instead of jumping to it. Otherwise the lead stays the foundation alone.
+          let sungLead = 0;
+          if (slot.kind === "hook" && pendingLead && layered && V.vocal) {
+            const anchorBeat = Math.round(seg.srcBar + seg.pickupBeats / 4) * 4;
+            const earliest = anchorBeat - pendingLead.bars * 4;
+            const starts = V.vocal.phrases.map((p) => p.startBeat).filter((b) => b >= earliest - 0.5 && b < anchorBeat - seg.pickupBeats - 0.5).sort((x, y) => x - y);
+            if (starts.length) {
+              const from = Math.max(earliest, Math.round(starts[0] * 4) / 4);
+              let e = 0;
+              for (let b = Math.floor(from / 4); b < anchorBeat / 4; b++) e += vocalEnergyOf(V, b);
+              const span = Math.max(1, anchorBeat / 4 - Math.floor(from / 4));
+              if (e / span >= 0.3) sungLead = anchorBeat - seg.pickupBeats - from;
+            }
+          }
+          if (sungLead > 0) {
+            startBeat -= sungLead;
+            srcBar -= sungLead / 4;
+            lengthBeats += sungLead;
+            label = `Build → ${label}`;
+          }
+          if (pendingLead && slot.kind === "hook") {
+            // Riser on the foundation across the lead: a high-pass sweep and a small level dip that release
+            // exactly on the hook's downbeat (gentler when the singer carries the build).
+            const hookBeat = slotStart * 4;
+            const leadBeat = pendingLead.startBar * 4;
+            const amount = sungLead > 0 ? 0.35 : 0.6;
+            automation.filter.push({ beat: leadBeat, value: 0 }, { beat: hookBeat - 0.5, value: amount }, { beat: hookBeat, value: 0 });
+            automation.level.push({ beat: leadBeat, value: 1 }, { beat: hookBeat - 1, value: sungLead > 0 ? 0.85 : 0.7 }, { beat: hookBeat, value: 1 });
+          }
+          pendingLead = null;
           if (startBeat < 0) {
             srcBar += -startBeat / 4;
             lengthBeats += startBeat;
@@ -575,7 +639,7 @@ export function planMashup(songs: [PlannerSong, PlannerSong], constraints: PlanC
             label,
             fit: best.fit,
             slotBars: seg.bars,
-            fadeIn: seg.pickupBeats > 0 ? 0.1 : 0.05,
+            fadeIn: sungLead > 0 ? 0.25 : seg.pickupBeats > 0 ? 0.1 : 0.05,
             fadeOut: layered ? Math.max(0.25, seg.audioBeats - Math.floor(seg.audioBeats)) : 0.25,
           });
           cursor += seg.bars;
@@ -601,7 +665,8 @@ export function planMashup(songs: [PlannerSong, PlannerSong], constraints: PlanC
           clips,
           score,
           breakdown: { harmony, phrases, energy: energyFit, stretch: 1 - stretchPenalty, phrasing: n > 0 ? phrasingSum / n : 0 },
-          description: (feature ? `Opens with ${feature.label ?? "the signature intro"} of ${feature.deck === F.deck ? F.name : V.name}; then ` : "") + describeCandidate(tid, F, V, fStart, shift, harmony),
+          automation: automation.filter.length ? automation : undefined,
+          description: (feature ? `Opens with ${feature.label ?? "the signature intro"} of ${feature.deck === F.deck ? F.name : V.name}; then ` : "") + describeCandidate(tid, F, V, fStart, shift, harmony) + (automation.filter.length ? (clips.some((c) => c.label.startsWith("Build")) ? "; the singer's own lead-in and a riser build into each hook" : "; a riser builds into each hook") : ""),
         });
       }
     }
