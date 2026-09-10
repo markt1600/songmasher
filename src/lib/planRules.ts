@@ -16,7 +16,7 @@ export interface PlanSegment {
   stem: StemKey;
   mode?: "layer" | "swap";
   /** exact geometry from the planner (beats); when present, nothing is snapped */
-  exact?: { startBeat: number; lengthBeats: number; fadeIn: number; fadeOut: number };
+  exact?: { startBeat: number; lengthBeats: number; fadeIn: number; fadeOut: number; gain?: number; eq?: { low: number; mid: number; high: number } };
 }
 
 export interface PlanInput {
@@ -73,13 +73,14 @@ export function sanitizePlan(plan: PlanInput, decks: Record<DeckId, DeckState>):
         deckId: seg.deck,
         stem,
         srcBar,
-        lengthBeats: Math.max(1, seg.exact.lengthBeats),
+        lengthBeats: Math.max(0.25, seg.exact.lengthBeats),
         startBeat: Math.max(0, seg.exact.startBeat),
         lane: Math.max(1, Math.min(CLIP_LANES, Math.round(seg.lane || 1))),
-        gain: 1,
+        gain: seg.exact.gain ?? 1,
         mode,
         fadeIn: seg.exact.fadeIn,
         fadeOut: seg.exact.fadeOut,
+        ...(seg.exact.eq ? { eq: seg.exact.eq } : {}),
       });
       continue;
     }

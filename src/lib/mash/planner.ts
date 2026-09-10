@@ -37,6 +37,8 @@ export interface PlanConstraints {
   knowledge?: boolean;
   /** false: no build-ups (lead-in phrases, risers and drops) before the hooks */
   buildups?: boolean;
+  /** false: no tease before the first and last hook (drums out, a stutter of the hook's first beat, a gap on the last beat) */
+  tease?: boolean;
   /** "both": the foundation song's own vocal takes turns with the other song's (duet templates) */
   vocals?: "one" | "both";
 }
@@ -80,6 +82,9 @@ export interface PlannedClip {
   slotBars: number;
   fadeIn: number; // beats
   fadeOut: number;
+  /** optional level and EQ for effect parts (teases, stutters) */
+  gain?: number;
+  eq?: { low: number; mid: number; high: number };
 }
 
 export interface PlanCandidate {
@@ -620,7 +625,27 @@ export function planMashup(songs: [PlannerSong, PlannerSong], constraints: PlanC
             const leadBeat = pendingLead.startBar * 4;
             const amount = sungLead > 0 ? 0.35 : 0.6;
             automation.filter.push({ beat: leadBeat, value: 0 }, { beat: hookBeat - 0.5, value: amount }, { beat: hookBeat, value: 0 });
-            automation.level.push({ beat: leadBeat, value: 1 }, { beat: hookBeat - 1, value: sungLead > 0 ? 0.85 : 0.7 }, { beat: hookBeat, value: 1 });
+            // Tease the drop on the first hook (and the last): drums out under the lead when the foundation
+            // has stems, a stutter of the hook's first beat over the last two beats, and one beat of near
+            // silence right before the downbeat so the hook lands with impact.
+            const hookRuns = slots.filter((x, i) => x.kind === "hook" && (i === 0 || slots[i - 1].kind !== "hook"));
+            const runIndex = hookRuns.findIndex((x) => x.startBar === slot.startBar);
+            const teaseHere = constraints.tease !== false && (runIndex === 0 || runIndex === hookRuns.length - 1);
+            if (teaseHere) {
+              if (F.stems.includes("melodic") && hookBeat - leadBeat >= 8) {
+                clips.push({ deck: F.deck, stem: "melodic", srcBar: fStart + pendingLead.startBar, lengthBeats: hookBeat - leadBeat - 1, startBeat: leadBeat, lane: 3, mode: "swap", label: "Drums out", fit: 1, slotBars: pendingLead.bars, fadeIn: 0.05, fadeOut: 0.25 });
+              }
+              if (layered && sungLead === 0) {
+                const hookSrcBeat = Math.round(seg.srcBar + seg.pickupBeats / 4) * 4 + seg.pickupBeats; // first sung beat of the hook
+                const gains = [0.55, 0.7, 0.85, 1];
+                for (let k = 0; k < 4; k++) {
+                  clips.push({ deck: V.deck, stem: "vocals", srcBar: hookSrcBeat / 4, lengthBeats: 0.5, startBeat: hookBeat - 2 + k * 0.5, lane: 2, mode: "layer", label: k === 0 ? "Tease" : "Tease again", fit: best.fit, slotBars: 0, fadeIn: 0.05, fadeOut: 0.1, gain: gains[k], eq: { low: -24, mid: 0, high: 3 } });
+                }
+              }
+              automation.level.push({ beat: leadBeat, value: 1 }, { beat: hookBeat - 1.05, value: sungLead > 0 ? 0.85 : 0.7 }, { beat: hookBeat - 1, value: 0.08 }, { beat: hookBeat - 0.05, value: 0.08 }, { beat: hookBeat, value: 1 });
+            } else {
+              automation.level.push({ beat: leadBeat, value: 1 }, { beat: hookBeat - 1, value: sungLead > 0 ? 0.85 : 0.7 }, { beat: hookBeat, value: 1 });
+            }
           }
           pendingLead = null;
           if (startBeat < 0) {
@@ -666,7 +691,7 @@ export function planMashup(songs: [PlannerSong, PlannerSong], constraints: PlanC
           score,
           breakdown: { harmony, phrases, energy: energyFit, stretch: 1 - stretchPenalty, phrasing: n > 0 ? phrasingSum / n : 0 },
           automation: automation.filter.length ? automation : undefined,
-          description: (feature ? `Opens with ${feature.label ?? "the signature intro"} of ${feature.deck === F.deck ? F.name : V.name}; then ` : "") + describeCandidate(tid, F, V, fStart, shift, harmony) + (automation.filter.length ? (clips.some((c) => c.label.startsWith("Build")) ? "; the singer's own lead-in and a riser build into each hook" : "; a riser builds into each hook") : ""),
+          description: (feature ? `Opens with ${feature.label ?? "the signature intro"} of ${feature.deck === F.deck ? F.name : V.name}; then ` : "") + describeCandidate(tid, F, V, fStart, shift, harmony) + (automation.filter.length ? (clips.some((c) => c.label.startsWith("Build")) ? "; the singer's own lead-in and a riser build into each hook" : "; a riser builds into each hook") + (clips.some((c) => c.label === "Tease" || c.label === "Drums out") || automation.level.some((pt) => pt.value < 0.2) ? ", with a tease and a gap before the drop" : "") : ""),
         });
       }
     }

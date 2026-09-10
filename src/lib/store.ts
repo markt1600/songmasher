@@ -118,7 +118,7 @@ export interface ClaudePlan {
   foundation: { deck: DeckId; startBar: number; stem: StemKey; reason: string };
   masterBpm: number;
   pitchShift: { deck: DeckId; semitones: number; reason: string } | null;
-  arrangement: { deck: DeckId; srcBar: number; lengthBars: number; startBar: number; lane: number; label: string; stem: StemKey; mode: "layer" | "swap"; exact?: { startBeat: number; lengthBeats: number; fadeIn: number; fadeOut: number } }[];
+  arrangement: { deck: DeckId; srcBar: number; lengthBars: number; startBar: number; lane: number; label: string; stem: StemKey; mode: "layer" | "swap"; exact?: { startBeat: number; lengthBeats: number; fadeIn: number; fadeOut: number; gain?: number; eq?: { low: number; mid: number; high: number } } }[];
   tips: string[];
   /** arrangement length in bars (includes the outro after the last clip) */
   lengthBars?: number;
@@ -1227,7 +1227,7 @@ export const useStore = create<Store>((set, get) => {
       label: labels?.[i] ?? k.label,
       stem: k.stem,
       mode: k.mode,
-      exact: { startBeat: k.startBeat, lengthBeats: k.lengthBeats, fadeIn: k.fadeIn, fadeOut: k.fadeOut },
+      exact: { startBeat: k.startBeat, lengthBeats: k.lengthBeats, fadeIn: k.fadeIn, fadeOut: k.fadeOut, ...(k.gain !== undefined ? { gain: k.gain } : {}), ...(k.eq ? { eq: k.eq } : {}) },
     })),
     tips: [],
   });

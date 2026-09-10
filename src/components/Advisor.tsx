@@ -8,7 +8,7 @@ import { Icon } from "./ui";
 
 const KIND_ICON: Record<string, string> = { foundation: "anchor", tempo: "loop", key: "music", hook: "scissors", verse: "scissors", beat: "anchor", info: "check" };
 /** Every constraint explicitly cleared: the planner falls back to its own choices. */
-const RESET: PlanConstraints = { foundation: undefined, lengthBars: undefined, vocalEntryBar: undefined, hookBars: undefined, energy: undefined, maxShift: undefined, template: undefined, vocals: undefined, mustInclude: undefined, knowledge: undefined, buildups: undefined };
+const RESET: PlanConstraints = { foundation: undefined, lengthBars: undefined, vocalEntryBar: undefined, hookBars: undefined, energy: undefined, maxShift: undefined, template: undefined, vocals: undefined, mustInclude: undefined, knowledge: undefined, buildups: undefined, tease: undefined };
 
 /** An adjust chip that stays lit while its constraint is active; clicking again clears it. */
 function Chip({ on, title, onClick, children }: { on: boolean; title?: string; onClick: () => void; children: ReactNode }) {
@@ -306,6 +306,15 @@ export default function Advisor() {
             >
               Build-ups
             </Chip>
+            {constraints.buildups !== false && (
+              <Chip
+                on={constraints.tease !== false}
+                title="Tease the drop before the first and last hook: the foundation's drums fall away under the lead-in (when it has stems), the hook's first beat stutters in over the last two beats, and one beat of near silence lands the hook with impact. Off: build-ups without the tease."
+                onClick={() => (constraints.tease === false ? quick({ tease: true }, "tease the drop again") : quick({ tease: false }, "no tease before the drop; keep the build-up"))}
+              >
+                Tease the drop
+              </Chip>
+            )}
             {config.ai && (
               <Chip
                 on={constraints.knowledge !== false}

@@ -54,6 +54,7 @@ export default function Deck({ id }: { id: DeckId }) {
   }, [id, register, loadFromLibrary]);
   const [showGrid, setShowGrid] = useState(false);
   const [aiMenu, setAiMenu] = useState(false);
+  const [taps, setTaps] = useState<number[]>([]);
   const fileRef = useRef<HTMLInputElement>(null);
   const color = DECK_COLORS[id];
   const isFoundation = project.foundation?.deckId === id;
@@ -302,7 +303,24 @@ export default function Deck({ id }: { id: DeckId }) {
                 onBlur={(e) => setDeckBpm(id, parseFloat(e.target.value))}
                 onKeyDown={(e) => e.key === "Enter" && (e.target as HTMLInputElement).blur()}
                 aria-label="Deck tempo"
+                title="Type a tempo and press Enter. It is saved with the song and synced to the cloud."
               />
+              <button
+                className={`btn btn-sm ${taps.length ? "text-accent-2" : ""}`}
+                onClick={() => {
+                  const now = performance.now();
+                  const next = taps.length && now - taps[taps.length - 1] > 2500 ? [now] : [...taps, now].slice(-12);
+                  setTaps(next);
+                  if (next.length >= 4) {
+                    const gaps = next.slice(1).map((t, i) => t - next[i]);
+                    const bpm = 60000 / (gaps.reduce((x, y) => x + y, 0) / gaps.length);
+                    setDeckBpm(id, Math.round(bpm * 10) / 10);
+                  }
+                }}
+                title="Tap along with the beat (at least four taps; keep tapping to refine). The tempo is saved with the song."
+              >
+                Tap{taps.length ? ` ${taps.length}` : ""}
+              </button>
               <span className="label ml-3 mr-1">Downbeat</span>
               <button className="btn btn-sm" onClick={() => nudgeDownbeat(id, -1)} title="Move bar 1 one beat earlier">
                 <Icon name="chev-left" size={11} /> 1 beat
