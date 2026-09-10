@@ -8,7 +8,7 @@ import { guessFromName, readAudioTags } from "./audio/tags";
 import { decodeArrayBuffer, decodeFile, getAudioContext, toMono } from "./engine/context";
 import { beatsPerMasterBeat, Engine, type EngineDecks } from "./engine/engine";
 import { runAnalysis, runEncodeMp3, runQuickStems, runSections, runVocalProfile } from "./workers";
-import { CLIP_LANES, emptyAutomation, type AutomationPoint, type Clip, type CuePoint, type DeckId, type DeckState, type DemucsVariant, type Foundation, type LoopRegion, type Project, type StemKey, type TransportOptions } from "./types";
+import { CLIP_LANES, MAX_CLIP_LANES, laneCountOf, emptyAutomation, type AutomationPoint, type Clip, type CuePoint, type DeckId, type DeckState, type DemucsVariant, type Foundation, type LoopRegion, type Project, type StemKey, type TransportOptions } from "./types";
 import { playWindow } from "./engine/engine";
 import { computeSuggestions, type Suggestion, type SuggestionAction } from "./advisor";
 import { describeSong, sanitizePlan } from "./planRules";
@@ -264,6 +264,8 @@ interface Store {
   autoEqCuts: Record<string, number>;
   /** phrase lock: snap drops and moves to the foundation's 4-bar phrase grid */
   setPhraseLock: (on: boolean) => void;
+  /** add or remove a clip lane (3 to 6; a lane with clips on it cannot be removed) */
+  setLaneCount: (n: number) => void;
   /** ms each clip was nudged onto the foundation's real beats at the last play */
   timingShifts: Record<string, number>;
   setZoom: (z: number) => void;
@@ -1898,7 +1900,7 @@ export const useStore = create<Store>((set, get) => {
         srcBar,
         lengthBeats: Math.max(0.25, Math.round((lengthBeats / k) * 4) / 4),
         startBeat,
-        lane: Math.max(1, Math.min(CLIP_LANES, lane)),
+        lane: Math.max(1, Math.min(laneCountOf(s.project), lane)),
         gain: 1,
         mode: opts?.mode ?? "layer",
       };
@@ -2018,7 +2020,7 @@ export const useStore = create<Store>((set, get) => {
       const db = Math.max(-minStart, deltaBeats);
       const minLane = Math.min(...moving.map((c) => c.lane));
       const maxLane = Math.max(...moving.map((c) => c.lane));
-      const dl = Math.max(1 - minLane, Math.min(CLIP_LANES - maxLane, deltaLane));
+      const dl = Math.max(1 - minLane, Math.min(laneCountOf(s.project) - maxLane, deltaLane));
       if (db === 0 && dl === 0) return;
       const clips = s.project.clips.map((c) => (sel.has(c.id) ? { ...c, startBeat: c.startBeat + db, lane: c.lane + dl } : c));
       setProject({ ...s.project, clips, lengthBars: growToFit(clips, s.project.lengthBars) });
@@ -2151,6 +2153,16 @@ export const useStore = create<Store>((set, get) => {
 
     setPhraseLock: (on) => {
       setProject({ ...get().project, phraseLock: on });
+    },
+
+    setLaneCount: (n) => {
+      const p = get().project;
+      const next = Math.max(CLIP_LANES, Math.min(MAX_CLIP_LANES, Math.round(n)));
+      if (next < laneCountOf(p) && p.clips.some((c) => c.lane > next)) {
+        get().showToast(`Lane ${next + 1} still has clips on it`);
+        return;
+      }
+      setProject({ ...p, laneCount: next });
     },
 
     setZoom: (z) => set({ zoom: Math.max(4, Math.min(60, z)) }),
@@ -2548,7 +2560,8 @@ export const useStore = create<Store>((set, get) => {
       const hadRegion = !!st.project.loopRegion;
       // The plan's own build-ups (risers into the hooks) replace any earlier automation; without them the lanes are cleared.
       const automation = plan.automation ? { level: [...plan.automation.level].sort((a, b) => a.beat - b.beat), filter: [...plan.automation.filter].sort((a, b) => a.beat - b.beat) } : emptyAutomation();
-      setProject({ ...st.project, clips, lengthBars, loopRegion: null, automation, cues: st.project.cues.filter((c) => c.beat <= lengthBars * 4) });
+      const laneCount = Math.max(laneCountOf(st.project), ...clips.map((c) => c.lane));
+      setProject({ ...st.project, clips, lengthBars, loopRegion: null, automation, laneCount, cues: st.project.cues.filter((c) => c.beat <= lengthBars * 4) });
       set({ selectedClipIds: [] });
       engine.seek(0);
       g.showToast(`${checked.notes.length ? "Applied the plan with a few rule fixes" : "Applied the plan"} · ${lengthBars} bars${hadRegion ? " · loop region cleared" : ""}`);

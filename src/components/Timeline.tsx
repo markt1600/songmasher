@@ -2,7 +2,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { barToTime } from "@/lib/audio/analysis";
 import { engine, useStore } from "@/lib/store";
-import { CLIP_LANES, DECK_COLORS, EQ_KILL, FLAT_EQ, STEM_LABELS, type AutomationPoint, type Clip, type DeckId, type Eq, type StemKey } from "@/lib/types";
+import { CLIP_LANES, MAX_CLIP_LANES, laneCountOf, DECK_COLORS, EQ_KILL, FLAT_EQ, STEM_LABELS, type AutomationPoint, type Clip, type DeckId, type Eq, type StemKey } from "@/lib/types";
 import { automationValue, foundationIntervals } from "@/lib/engine/engine";
 import { useDnd } from "@/lib/dnd";
 import { phraseStrength } from "@/lib/mash/planner";
@@ -21,12 +21,12 @@ function laneTop(lane: number): number {
   return lane === 0 ? 0 : LANE_H + AUTO_H + (lane - 1) * LANE_H;
 }
 /** Drop lane for a pointer height inside the lanes area: never null, the nearest sensible lane. */
-function nearestLane(y: number): number {
+function nearestLane(y: number, lanes: number): number {
   if (y < LANE_H) return 0;
   if (y < LANE_H + AUTO_H) return 1;
-  return Math.max(1, Math.min(CLIP_LANES, 1 + Math.floor((y - LANE_H - AUTO_H) / LANE_H)));
+  return Math.max(1, Math.min(lanes, 1 + Math.floor((y - LANE_H - AUTO_H) / LANE_H)));
 }
-const LANES_HEIGHT = LANE_H + AUTO_H + CLIP_LANES * LANE_H;
+const lanesHeight = (lanes: number) => LANE_H + AUTO_H + lanes * LANE_H;
 
 export default function Timeline() {
   const project = useStore((s) => s.project);
@@ -39,7 +39,7 @@ export default function Timeline() {
   const tightTiming = project.tightTiming !== false;
   const autoEq = project.autoEq !== false;
   const autoEqCuts = useStore((s) => s.autoEqCuts);
-  const { setZoom, selectClip, soloClip, setLevelMatch, setTightTiming, setAutoEq, setPhraseLock, updateClip, removeSelected, repeatSelected, setLengthBars, seek, clearClips, setFoundation, clearFoundation, addClip, moveClips, nudgeClip, autoAlignClip, setLoopRegion, addCue, updateCue, removeCue, loopSelected } = useStore();
+  const { setZoom, selectClip, soloClip, setLevelMatch, setTightTiming, setAutoEq, setPhraseLock, setLaneCount, updateClip, removeSelected, repeatSelected, setLengthBars, seek, clearClips, setFoundation, clearFoundation, addClip, moveClips, nudgeClip, autoAlignClip, setLoopRegion, addCue, updateCue, removeCue, loopSelected } = useStore();
   const scrollRef = useRef<HTMLDivElement>(null);
   const lanesRef = useRef<HTMLDivElement>(null);
   const register = useDnd((s) => s.register);
@@ -50,6 +50,7 @@ export default function Timeline() {
   const width = totalBeats * zoom;
   const spb = 60 / project.masterBpm;
 
+  const laneCount = laneCountOf(project);
   const phraseLock = project.phraseLock !== false;
   /** Timeline beats where the foundation begins a phrase (8-bar strong, 4-bar weak), from its own sections. */
   const phraseBeats = useMemo(() => {
@@ -86,7 +87,7 @@ export default function Timeline() {
         // Forgiving placement: anywhere over the timeline is a valid drop. Above the lanes or on the
         // foundation row means "use as foundation"; the automation row and anything below the last
         // lane go to the nearest clip lane.
-        const lane = nearestLane(y - r.top);
+        const lane = nearestLane(y - r.top, laneCount);
         // The clip starts where the pointer is (its left edge follows the cursor), snapped to the bar,
         // or to the beat with the option key held.
         const rawBeat = Math.max(0, (x - r.left) / zoom);
@@ -113,7 +114,7 @@ export default function Timeline() {
         });
       },
     });
-  }, [register, zoom, setFoundation, addClip, phraseLock, snapToPhrase]);
+  }, [register, zoom, setFoundation, addClip, phraseLock, snapToPhrase, laneCount]);
 
   useEffect(() => {
     const el = scrollRef.current;
@@ -292,7 +293,7 @@ export default function Timeline() {
       </div>
 
       <div ref={scrollRef} className="overflow-x-auto overflow-y-hidden relative" style={{ scrollbarGutter: "stable", WebkitOverflowScrolling: "touch" }}>
-        <div className="relative" style={{ width: width + HEADER_W + 40, height: RULER_H + LANES_HEIGHT }} onPointerDown={(e) => e.target === e.currentTarget && selectClip(null)}>
+        <div className="relative" style={{ width: width + HEADER_W + 40, height: RULER_H + lanesHeight(laneCount) }} onPointerDown={(e) => e.target === e.currentTarget && selectClip(null)}>
           {/* Lane headers */}
           <div className="absolute left-0 top-0 bottom-0 z-10 bg-[#101015]/95 backdrop-blur border-r border-white/[0.08]" style={{ width: HEADER_W }}>
             <div style={{ height: RULER_H }} />
@@ -319,9 +320,23 @@ export default function Timeline() {
                 </button>
               </div>
             </div>
-            {Array.from({ length: CLIP_LANES }).map((_, i) => (
+            {Array.from({ length: laneCount }).map((_, i) => (
               <div key={i} className="px-3 flex items-center border-b border-white/[0.06]" style={{ height: LANE_H }}>
                 <div className="label">Clips {i + 1}</div>
+                {i === laneCount - 1 && (
+                  <div className="ml-auto flex items-center gap-0.5">
+                    {laneCount > CLIP_LANES && (
+                      <button className="btn btn-xs !px-1 text-muted" onClick={() => setLaneCount(laneCount - 1)} title="Remove this lane (it must be empty)" aria-label="Remove lane">
+                        <Icon name="minus" size={9} />
+                      </button>
+                    )}
+                    {laneCount < MAX_CLIP_LANES && (
+                      <button className="btn btn-xs !px-1 text-muted" onClick={() => setLaneCount(laneCount + 1)} title="Add a clip lane (up to 6). Lanes are only for laying parts out; everything on them plays together." aria-label="Add lane">
+                        <Icon name="plus" size={9} />
+                      </button>
+                    )}
+                  </div>
+                )}
               </div>
             ))}
           </div>
@@ -403,7 +418,7 @@ export default function Timeline() {
             <div className="absolute left-0 right-0 border-b border-white/6" style={{ top: LANE_H, height: AUTO_H }}>
               <AutomationLane param={autoParam} points={project.automation[autoParam]} zoom={zoom} totalBeats={totalBeats} />
             </div>
-            {Array.from({ length: CLIP_LANES }).map((_, i) => (
+            {Array.from({ length: laneCount }).map((_, i) => (
               <div key={i} className="absolute left-0 right-0 border-b border-white/6 pointer-events-none" style={{ top: laneTop(i + 1), height: LANE_H }} />
             ))}
             {region && <div className="absolute top-0 bottom-0 pointer-events-none" style={{ left: region.startBeat * zoom, width: (region.endBeat - region.startBeat) * zoom, background: "rgba(255,214,10,0.04)", borderLeft: "1px dashed rgba(255,214,10,0.4)", borderRight: "1px dashed rgba(255,214,10,0.4)" }} />}
@@ -417,7 +432,7 @@ export default function Timeline() {
             )}
 
             {project.clips.map((c) => (
-              <ClipView key={c.id} clip={c} zoom={zoom} selected={selectedClipIds.includes(c.id)} selectedIds={selectedClipIds} solo={soloClipId === c.id} dimmed={soloClipId !== null && soloClipId !== c.id} snapBeat={phraseLock ? snapToPhrase : undefined} onSelect={(add) => selectClip(c.id, { add })} onMove={(db, dl) => moveClips(selectedClipIds.includes(c.id) ? selectedClipIds : [c.id], db, dl)} onResize={(len) => updateClip(c.id, { lengthBeats: len })} onRepeat={repeatSelected} onSolo={() => void soloClip(c.id)} />
+              <ClipView key={c.id} clip={c} zoom={zoom} selected={selectedClipIds.includes(c.id)} selectedIds={selectedClipIds} solo={soloClipId === c.id} dimmed={soloClipId !== null && soloClipId !== c.id} snapBeat={phraseLock ? snapToPhrase : undefined} laneCount={laneCount} onSelect={(add) => selectClip(c.id, { add })} onMove={(db, dl) => moveClips(selectedClipIds.includes(c.id) ? selectedClipIds : [c.id], db, dl)} onResize={(len) => updateClip(c.id, { lengthBeats: len })} onRepeat={repeatSelected} onSolo={() => void soloClip(c.id)} />
             ))}
 
             {dropHover && dragPayload?.kind === "selection" && dropHover.lane !== undefined && (
@@ -434,11 +449,11 @@ export default function Timeline() {
               />
             )}
             {dragPayload?.kind === "selection" &&
-              [0, ...Array.from({ length: CLIP_LANES }, (_, i) => i + 1)].map((lane) => (
+              [0, ...Array.from({ length: laneCount }, (_, i) => i + 1)].map((lane) => (
                 <div key={`hint-${lane}`} className="absolute left-0 right-0 pointer-events-none" style={{ top: laneTop(lane), height: LANE_H, background: dropHover?.lane === lane ? "rgba(255,255,255,0.04)" : "transparent", outline: "1px dashed rgba(255,255,255,0.12)", outlineOffset: -3 }} />
               ))}
             {!hasAnything && !dragPayload && (
-              <div className="absolute inset-x-0 flex items-center justify-center text-[13px] text-muted pointer-events-none" style={{ top: laneTop(1), height: LANE_H * CLIP_LANES }}>
+              <div className="absolute inset-x-0 flex items-center justify-center text-[13px] text-muted pointer-events-none" style={{ top: laneTop(1), height: LANE_H * laneCount }}>
                 Select bars on a waveform, then drag them here or press “Add to timeline”.
               </div>
             )}
@@ -704,7 +719,7 @@ function FoundationBlock({ deckId, stem, startBar, zoom, widthBeats, masterBpm, 
   );
 }
 
-function ClipView({ clip, zoom, selected, selectedIds, solo, dimmed, snapBeat, onSelect, onMove, onResize, onRepeat, onSolo }: { clip: Clip; zoom: number; selected: boolean; selectedIds: string[]; solo: boolean; dimmed: boolean; snapBeat?: (beat: number) => number; onSelect: (add: boolean) => void; onMove: (deltaBeats: number, deltaLane: number) => void; onResize: (len: number) => void; onRepeat: () => void; onSolo: () => void }) {
+function ClipView({ clip, zoom, selected, selectedIds, solo, dimmed, snapBeat, laneCount, onSelect, onMove, onResize, onRepeat, onSolo }: { clip: Clip; zoom: number; selected: boolean; selectedIds: string[]; solo: boolean; dimmed: boolean; snapBeat?: (beat: number) => number; laneCount: number; onSelect: (add: boolean) => void; onMove: (deltaBeats: number, deltaLane: number) => void; onResize: (len: number) => void; onRepeat: () => void; onSolo: () => void }) {
   const deck = useStore((s) => s.decks[clip.deckId]);
   const trimDb = useStore((s) => s.levelTrims[clip.id]);
   const timingMs = useStore((s) => s.timingShifts[clip.id]);
@@ -762,7 +777,7 @@ function ClipView({ clip, zoom, selected, selectedIds, solo, dimmed, snapBeat, o
 
   const startBeat = Math.max(0, clip.startBeat + (live?.dBeats ?? 0));
   const lengthBeats = live?.len ?? clip.lengthBeats;
-  const lane = Math.max(1, Math.min(CLIP_LANES, clip.lane + (live?.dLane ?? 0)));
+  const lane = Math.max(1, Math.min(laneCount, clip.lane + (live?.dLane ?? 0)));
   const w = lengthBeats * zoom;
   const fadeInW = (clip.fadeIn ?? 0) * zoom;
   const fadeOutW = (clip.fadeOut ?? 0) * zoom;

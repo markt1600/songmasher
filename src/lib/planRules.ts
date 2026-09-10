@@ -4,7 +4,7 @@
  * phrase boundaries.
  */
 import type { SongAnalysis } from "./audio/analysis";
-import { CLIP_LANES, type Clip, type DeckId, type DeckState, type Foundation, type StemKey } from "./types";
+import { MAX_CLIP_LANES, type Clip, type DeckId, type DeckState, type Foundation, type StemKey } from "./types";
 
 export interface PlanSegment {
   deck: DeckId;
@@ -75,7 +75,7 @@ export function sanitizePlan(plan: PlanInput, decks: Record<DeckId, DeckState>):
         srcBar,
         lengthBeats: Math.max(0.25, seg.exact.lengthBeats),
         startBeat: Math.max(0, seg.exact.startBeat),
-        lane: Math.max(1, Math.min(CLIP_LANES, Math.round(seg.lane || 1))),
+        lane: Math.max(1, Math.min(MAX_CLIP_LANES, Math.round(seg.lane || 1))),
         gain: seg.exact.gain ?? 1,
         mode,
         fadeIn: seg.exact.fadeIn,
@@ -92,7 +92,7 @@ export function sanitizePlan(plan: PlanInput, decks: Record<DeckId, DeckState>):
       srcBar,
       lengthBeats: lengthBars * 4,
       startBeat: snap(seg.startBar) * 4,
-      lane: Math.max(1, Math.min(CLIP_LANES, Math.round(seg.lane || 1))),
+      lane: Math.max(1, Math.min(MAX_CLIP_LANES, Math.round(seg.lane || 1))),
       gain: 1,
       mode,
     });

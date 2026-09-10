@@ -114,6 +114,8 @@ export interface Project {
   autoEq?: boolean;
   /** phrase lock: drops and moves snap to the foundation's 4-bar phrase grid (default on) */
   phraseLock?: boolean;
+  /** number of clip lanes shown (default CLIP_LANES, up to MAX_CLIP_LANES) */
+  laneCount?: number;
 }
 
 export const emptyAutomation = (): Automation => ({ level: [], filter: [] });
@@ -124,6 +126,8 @@ export interface TransportOptions {
 }
 
 export const CLIP_LANES = 3;
+export const MAX_CLIP_LANES = 6;
+export const laneCountOf = (p: { laneCount?: number }): number => Math.max(CLIP_LANES, Math.min(MAX_CLIP_LANES, p.laneCount ?? CLIP_LANES));
 
 export const DECK_COLORS: Record<DeckId, { main: string; soft: string; glow: string }> = {
   A: { main: "#22d3ee", soft: "rgba(34,211,238,0.18)", glow: "rgba(34,211,238,0.55)" },

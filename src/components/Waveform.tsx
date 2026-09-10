@@ -176,7 +176,9 @@ export default function Waveform({ deckId, analysis, height = 176 }: Props) {
     // Beat grid + ruler labels
     const firstBeat = Math.max(0, Math.floor((view.start - analysis.firstDownbeat) / analysis.beatInterval));
     const lastBeat = Math.floor((view.end - analysis.firstDownbeat) / analysis.beatInterval) + 1;
-    const labelEvery = barLen * pxPerSec > 34 ? 1 : barLen * pxPerSec > 18 ? 2 : 4;
+    // Label step grows with the song: the smallest of 1, 2, 4, 8, 16, 32, 64 bars that keeps labels ~36 px apart.
+    const pxPerBar = barLen * pxPerSec;
+    const labelEvery = [1, 2, 4, 8, 16, 32, 64].find((n) => n * pxPerBar >= 36) ?? 64;
     for (let k = firstBeat; k <= lastBeat; k++) {
       const x = xOf(analysis.firstDownbeat + k * analysis.beatInterval);
       const bar = k % 4 === 0;
