@@ -100,6 +100,8 @@ export interface PlanCandidate {
   breakdown: { harmony: number; phrases: number; energy: number; stretch: number; phrasing?: number };
   /** foundation automation that builds tension into each hook (filter riser + level dip) */
   automation?: { level: { beat: number; value: number }[]; filter: { beat: number; value: number }[] };
+  /** timeline beats per vocal beat: 0.5 = the vocal rides in double time, 2 = half time, 1 = same */
+  vocalOctave?: number;
   description: string;
 }
 
@@ -161,7 +163,7 @@ function vocalEnergyOf(song: PlannerSong, bar: number): number {
   return song.analysis.barVocal[bar] ?? 0;
 }
 
-export function vocalSegments(song: PlannerSong, bars: number): VocalSegment[] {
+export function vocalSegments(song: PlannerSong, bars: number, unit = 4): VocalSegment[] {
   const a = song.analysis;
   const segs: VocalSegment[] = [];
   const sectionOf = (bar: number) => a.sections?.find((s) => bar >= s.startBar && bar < s.endBar);
@@ -240,7 +242,7 @@ export function vocalSegments(song: PlannerSong, bars: number): VocalSegment[] {
         if (!audible(anchorBar, best.spanBars)) continue; // the mix itself is silent here: the profile cannot be right
         const srcStartBeat = anchorBar * 4 - pickupBeats;
         // Parts occupy whole phrases (2, 4, 8, 12 bars...) so the next part enters on a phrase boundary.
-        const slotBars = best.spanBars <= 2 ? 2 : Math.ceil(best.spanBars / 4) * 4;
+        const slotBars = best.spanBars <= 2 ? 2 : Math.ceil(best.spanBars / unit) * unit;
         // Tail after the last word: up to 0.6 beat of room for the note to ring, but never into the next line.
         const following = sorted.find((q) => q.startBeat > best.endBeat + 0.1);
         const gap = following ? following.startBeat - best.endBeat : 8;
@@ -410,7 +412,10 @@ export function planMashup(songs: [PlannerSong, PlannerSong], constraints: PlanC
   const fChroma = fa.barChroma;
 
   const ratio = va.bpm / fa.bpm;
-  const octave = ratio > 1.6 ? 0.5 : ratio < 0.62 ? 2 : 1;
+  // octave: timeline beats per vocal beat. 0.5 = the vocal rides in double time (160 over 80) at its
+  // natural speed; 2 = half time. The engine makes the same choice, so nothing is stretched needlessly.
+  // Same rule as the engine's tempo match: the octave that needs the least stretch wins.
+  const octave = ([1, 0.5, 2] as const).reduce((best, o) => (Math.abs(Math.log(ratio * o)) < Math.abs(Math.log(ratio * best)) ? o : best), 1 as 1 | 0.5 | 2);
   const vBpmEff = va.bpm * octave;
   let masterBpm = fa.bpm;
   const gap = Math.abs(Math.log(vBpmEff / fa.bpm));
@@ -433,8 +438,10 @@ export function planMashup(songs: [PlannerSong, PlannerSong], constraints: PlanC
   const fHook = hookRange(fa.sections ?? [], fa.barEnergy, F.vocal ? F.vocal.barVocal : fa.barVocal);
   const results: PlanCandidate[] = [];
   const segsByBars = new Map<number, VocalSegment[]>();
+  /** vocal bars that fill `bars` foundation bars (a double-time vocal needs twice as many) */
+  const vBars = (bars: number) => Math.max(2, Math.round(bars / octave / 2) * 2);
   const segsFor = (bars: number) => {
-    if (!segsByBars.has(bars)) segsByBars.set(bars, vocalSegments(V, bars));
+    if (!segsByBars.has(bars)) segsByBars.set(bars, vocalSegments(V, bars, 4 / octave));
     return segsByBars.get(bars)!;
   };
 
@@ -496,7 +503,7 @@ export function planMashup(songs: [PlannerSong, PlannerSong], constraints: PlanC
           }
           if (slot.kind === "feature") {
             if (feature && feature.deck === V.deck) {
-              const srcBar = Math.max(0, Math.min(va.totalBars - slot.bars, Math.round(feature.srcBar)));
+              const srcBar = Math.max(0, Math.min(va.totalBars - slot.bars / octave, Math.round(feature.srcBar)));
               clips.push({ deck: V.deck, stem: "full", srcBar, lengthBeats: slot.bars * 4, startBeat: slotStart * 4, lane: 2, mode: "swap", label: feature.label ?? "Signature opening", fit: 1, slotBars: slot.bars, fadeIn: 0, fadeOut: 0.5 });
             }
             // (for the foundation's own opening the foundation itself plays it: nothing to add)
@@ -540,25 +547,26 @@ export function planMashup(songs: [PlannerSong, PlannerSong], constraints: PlanC
             continue;
           }
           if (slot.kind === "swap") {
-            const all = segsFor(hook);
+            const all = segsFor(vBars(hook));
             const cands = all.filter((s) => s.kind === "hook" || s.energy > 0.5);
             const pick = [...(cands.length ? cands : all)].sort((x, y) => y.energy - x.energy)[0];
             if (!pick) {
               ok = false;
               break;
             }
-            clips.push({ deck: V.deck, stem: "full", srcBar: Math.floor(pick.srcBar), lengthBeats: pick.bars * 4, startBeat: slotStart * 4, lane: 1, mode: "swap", label: "Drop", fit: 1, slotBars: pick.bars, fadeIn: 0, fadeOut: 0.5 });
-            cursor += pick.bars;
+            const tlBars = pick.bars * octave;
+            clips.push({ deck: V.deck, stem: "full", srcBar: Math.floor(pick.srcBar), lengthBeats: tlBars * 4, startBeat: slotStart * 4, lane: 1, mode: "swap", label: "Drop", fit: 1, slotBars: tlBars, fadeIn: 0, fadeOut: 0.5 });
+            cursor += tlBars;
             continue;
           }
           let best: { seg: VocalSegment; fit: number; score: number } | null = null;
-          for (const seg of segsFor(hook)) {
-            if (fStart + slotStart + seg.bars > fa.totalBars) continue;
+          for (const seg of segsFor(vBars(hook))) {
+            if (fStart + slotStart + seg.bars * octave > fa.totalBars) continue;
             let fit = 0;
             let w = 0;
             for (let i = 0; i < seg.bars; i++) {
               const vb = Math.floor(seg.srcBar + seg.pickupBeats / 4 + 1e-6) + i;
-              const fb = fStart + slotStart + i;
+              const fb = fStart + slotStart + Math.floor(i * octave);
               const vc = chromaAt(vChroma, vb);
               const fc = chromaAt(fChroma, fb);
               const weight = 0.3 + vocalEnergyOf(V, vb);
@@ -592,10 +600,11 @@ export function planMashup(songs: [PlannerSong, PlannerSong], constraints: PlanC
           slotTotal += best.score;
           n++;
           let label = slot.kind === "hook" ? (repeated ? "Hook again" : "Hook") : "Breakdown";
+          // Timeline geometry: vocal beats become timeline beats through the octave (double time = half as many).
           // A pickup cannot start before the timeline: trim it when the part sits at bar 0.
-          let startBeat = slotStart * 4 - seg.pickupBeats;
+          let startBeat = slotStart * 4 - seg.pickupBeats * octave;
           let srcBar = seg.srcBar;
-          let lengthBeats = layered ? seg.audioBeats : seg.bars * 4 + seg.pickupBeats;
+          let lengthBeats = (layered ? seg.audioBeats : seg.bars * 4 + seg.pickupBeats) * octave;
           // Build-up into a hook: when the singer's own lead-in (a pre-chorus, the end of the verse) sits
           // right before this hook in the source, bring it in over the lead slot so the melody resolves
           // into the hook instead of jumping to it. Otherwise the lead stays the foundation alone.
@@ -613,9 +622,9 @@ export function planMashup(songs: [PlannerSong, PlannerSong], constraints: PlanC
             }
           }
           if (sungLead > 0) {
-            startBeat -= sungLead;
+            startBeat -= sungLead * octave;
             srcBar -= sungLead / 4;
-            lengthBeats += sungLead;
+            lengthBeats += sungLead * octave;
             label = `Build → ${label}`;
           }
           if (pendingLead && slot.kind === "hook") {
@@ -649,7 +658,7 @@ export function planMashup(songs: [PlannerSong, PlannerSong], constraints: PlanC
           }
           pendingLead = null;
           if (startBeat < 0) {
-            srcBar += -startBeat / 4;
+            srcBar += -startBeat / octave / 4;
             lengthBeats += startBeat;
             startBeat = 0;
           }
@@ -663,11 +672,11 @@ export function planMashup(songs: [PlannerSong, PlannerSong], constraints: PlanC
             mode: layered ? "layer" : "swap",
             label,
             fit: best.fit,
-            slotBars: seg.bars,
+            slotBars: seg.bars * octave,
             fadeIn: sungLead > 0 ? 0.25 : seg.pickupBeats > 0 ? 0.1 : 0.05,
-            fadeOut: layered ? Math.max(0.25, seg.audioBeats - Math.floor(seg.audioBeats)) : 0.25,
+            fadeOut: (layered ? Math.max(0.25, seg.audioBeats - Math.floor(seg.audioBeats)) : 0.25) * octave,
           });
-          cursor += seg.bars;
+          cursor += seg.bars * octave;
         }
         if (!ok || n === 0) continue;
         const length = Math.min(fa.totalBars - fStart, Math.max(8, Math.ceil((cursor + 4) / 4) * 4));
@@ -691,7 +700,8 @@ export function planMashup(songs: [PlannerSong, PlannerSong], constraints: PlanC
           score,
           breakdown: { harmony, phrases, energy: energyFit, stretch: 1 - stretchPenalty, phrasing: n > 0 ? phrasingSum / n : 0 },
           automation: automation.filter.length ? automation : undefined,
-          description: (feature ? `Opens with ${feature.label ?? "the signature intro"} of ${feature.deck === F.deck ? F.name : V.name}; then ` : "") + describeCandidate(tid, F, V, fStart, shift, harmony) + (automation.filter.length ? (clips.some((c) => c.label.startsWith("Build")) ? "; the singer's own lead-in and a riser build into each hook" : "; a riser builds into each hook") + (clips.some((c) => c.label === "Tease" || c.label === "Drums out") || automation.level.some((pt) => pt.value < 0.2) ? ", with a tease and a gap before the drop" : "") : ""),
+          vocalOctave: octave,
+          description: (octave !== 1 ? `${V.name} rides in ${octave === 0.5 ? "double" : "half"} time at its own speed (${Math.round(va.bpm)} over ${Math.round(fa.bpm)} BPM); ` : "") + (feature ? `Opens with ${feature.label ?? "the signature intro"} of ${feature.deck === F.deck ? F.name : V.name}; then ` : "") + describeCandidate(tid, F, V, fStart, shift, harmony) + (automation.filter.length ? (clips.some((c) => c.label.startsWith("Build")) ? "; the singer's own lead-in and a riser build into each hook" : "; a riser builds into each hook") + (clips.some((c) => c.label === "Tease" || c.label === "Drums out") || automation.level.some((pt) => pt.value < 0.2) ? ", with a tease and a gap before the drop" : "") : ""),
         });
       }
     }

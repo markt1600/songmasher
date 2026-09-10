@@ -6,6 +6,7 @@ import { CLIP_LANES, DECK_COLORS, EQ_KILL, FLAT_EQ, STEM_LABELS, type Automation
 import { automationValue, foundationIntervals } from "@/lib/engine/engine";
 import { useDnd } from "@/lib/dnd";
 import { phraseStrength } from "@/lib/mash/planner";
+import { beatsPerMasterBeat, tempoMatch } from "@/lib/engine/engine";
 import { Icon, Stepper } from "./ui";
 import { SECTION_COLORS } from "./SectionLane";
 
@@ -90,10 +91,12 @@ export default function Timeline() {
         // or to the beat with the option key held.
         const rawBeat = Math.max(0, (x - r.left) / zoom);
         const beat = altKey ? Math.round(rawBeat) : phraseLock ? snapToPhrase(rawBeat) : Math.round(rawBeat / 4) * 4;
-        const bars = payload.lengthBeats / 4;
+        const deckBpm = useStore.getState().decks[payload.deckId].analysis?.bpm;
+        const kk = deckBpm ? beatsPerMasterBeat(deckBpm, useStore.getState().project.masterBpm) : 1;
+        const bars = payload.lengthBeats / kk / 4;
         return lane === 0
           ? { lane, beat: 0, label: `Use as foundation from bar ${payload.srcBar + 1}` }
-          : { lane, beat, label: `Lane ${lane} · bar ${Math.floor(beat / 4) + 1} · ${bars} bar${bars === 1 ? "" : "s"}${altKey ? " · beat snap" : phraseLock ? " · on the phrase (⌥ for beats)" : " · snaps to bar (⌥ for beats)"}` };
+          : { lane, beat, label: `Lane ${lane} · bar ${Math.floor(beat / 4) + 1} · ${bars} bar${bars === 1 ? "" : "s"}${kk !== 1 ? ` (${kk === 2 ? "double" : "half"} time)` : ""}${altKey ? " · beat snap" : phraseLock ? " · on the phrase (⌥ for beats)" : " · snaps to bar (⌥ for beats)"}` };
       },
       onDrop: (payload, info) => {
         if (payload.kind !== "selection" || info.lane === undefined) return;
@@ -422,7 +425,7 @@ export default function Timeline() {
                 className="absolute rounded-[8px] border-2 border-dashed pointer-events-none z-[3]"
                 style={{
                   left: dropHover.lane === 0 ? 0 : (dropHover.beat ?? 0) * zoom,
-                  width: dropHover.lane === 0 ? Math.max(totalBeats * zoom, 40) : dragPayload.lengthBeats * zoom,
+                  width: dropHover.lane === 0 ? Math.max(totalBeats * zoom, 40) : (dragPayload.lengthBeats / (decks[dragPayload.deckId].analysis ? beatsPerMasterBeat(decks[dragPayload.deckId].analysis!.bpm, project.masterBpm) : 1)) * zoom,
                   top: laneTop(dropHover.lane) + 5,
                   height: LANE_H - 10,
                   borderColor: DECK_COLORS[dragPayload.deckId].main,
@@ -587,6 +590,7 @@ function MiniWave({ deckId, stem, srcBar, lengthBeats, width, height, scale = 1 
   const ref = useRef<HTMLCanvasElement>(null);
   const analysis = useStore((s) => s.decks[deckId].analysis);
   const buffer = useStore((s) => s.decks[deckId].buffers[stem]);
+  const masterBpm = useStore((s) => s.project.masterBpm);
   useEffect(() => {
     const canvas = ref.current;
     if (!canvas || !analysis) return;
@@ -597,7 +601,8 @@ function MiniWave({ deckId, stem, srcBar, lengthBeats, width, height, scale = 1 
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
     ctx.clearRect(0, 0, width, height);
     const t0 = barToTime(analysis, srcBar);
-    const t1 = t0 + lengthBeats * analysis.beatInterval;
+    // timeline beats -> this deck's beats (a double-time deck fits two of its beats in one master beat)
+    const t1 = t0 + lengthBeats * beatsPerMasterBeat(analysis.bpm, masterBpm) * analysis.beatInterval;
     const mid = height / 2;
     ctx.fillStyle = "rgba(255,255,255,0.75)";
     ctx.beginPath();
@@ -639,7 +644,7 @@ function MiniWave({ deckId, stem, srcBar, lengthBeats, width, height, scale = 1 
       }
     }
     ctx.fill();
-  }, [analysis, buffer, srcBar, lengthBeats, width, height, scale]);
+  }, [analysis, buffer, srcBar, lengthBeats, width, height, scale, masterBpm]);
   return <canvas ref={ref} style={{ width, height }} className="absolute inset-x-0 bottom-0 pointer-events-none opacity-70" />;
 }
 
@@ -648,7 +653,7 @@ function FoundationBlock({ deckId, stem, startBar, zoom, widthBeats, masterBpm, 
   const trimDb = useStore((s) => s.levelTrims.foundation ?? 0);
   const a = deck.analysis!;
   const color = DECK_COLORS[deckId];
-  const ratio = a.bpm / masterBpm;
+  const ratio = tempoMatch(a.bpm, masterBpm).ratio;
   const availableBeats = Math.max(0, ((a.duration - barToTime(a, startBar)) * ratio) / (60 / masterBpm));
   const beats = Math.min(widthBeats, availableBeats);
   const w = beats * zoom;
@@ -704,6 +709,7 @@ function ClipView({ clip, zoom, selected, selectedIds, solo, dimmed, snapBeat, o
   const trimDb = useStore((s) => s.levelTrims[clip.id]);
   const timingMs = useStore((s) => s.timingShifts[clip.id]);
   const autoLow = useStore((s) => s.autoEqCuts[clip.id]);
+  const deckK = useStore((s) => (s.decks[clip.deckId].analysis ? beatsPerMasterBeat(s.decks[clip.deckId].analysis!.bpm, s.project.masterBpm) : 1));
   const color = DECK_COLORS[clip.deckId];
   const [drag, setDrag] = useState<{ mode: "move" | "resize"; startX: number; startY: number; origLen: number; plain: boolean } | null>(null);
   const [live, setLive] = useState<{ dBeats: number; dLane: number; len: number } | null>(null);
@@ -783,7 +789,7 @@ function ClipView({ clip, zoom, selected, selectedIds, solo, dimmed, snapBeat, o
         cancelClick();
         onRepeat();
       }}
-      title={`${deck.name} · bars ${clip.srcBar + 1}–${clip.srcBar + Math.ceil(clip.lengthBeats / 4)} · ${STEM_LABELS[clip.stem]}\nClick to play this clip alone (click again to stop) · drag to move · shift-click to multi-select · right edge resizes · double-click repeats`}
+      title={`${deck.name} · bars ${clip.srcBar + 1}–${clip.srcBar + Math.ceil((clip.lengthBeats * deckK) / 4)} · ${STEM_LABELS[clip.stem]}${deckK !== 1 ? ` · ${deckK === 2 ? "double" : "half"} time` : ""}\nClick to play this clip alone (click again to stop) · drag to move · shift-click to multi-select · right edge resizes · double-click repeats`}
     >
       <MiniWave deckId={clip.deckId} stem={clip.stem} srcBar={clip.srcBar} lengthBeats={lengthBeats} width={w} height={LANE_H - 30} scale={dbToGain(trimDb ?? 0) * clip.gain} />
       {fadeInW > 0 && <div className="absolute top-0 bottom-0 left-0 pointer-events-none" style={{ width: fadeInW, background: "linear-gradient(90deg, rgba(0,0,0,0.55), transparent)" }} />}

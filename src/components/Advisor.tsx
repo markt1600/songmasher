@@ -138,6 +138,7 @@ export default function Advisor() {
             <Icon name="wand" size={14} />
             <div className="font-medium">
               {TEMPLATE_NAME[selected.template]} · {decks[selected.foundation.deck].name} under {decks[selected.vocalDeck].name}
+              {selected.vocalOctave && selected.vocalOctave !== 1 ? <span className="chip ml-2" title="The vocal keeps its natural speed and rides the beat at a different octave instead of being stretched to match">{selected.vocalOctave === 0.5 ? "double time" : "half time"}</span> : null}
             </div>
             <span className="chip">
               <b>{selected.masterBpm.toFixed(1)}</b> BPM

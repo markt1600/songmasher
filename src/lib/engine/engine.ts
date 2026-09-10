@@ -51,8 +51,27 @@ const SILENCE_LUFS = -45;
 /** Longest stretch measured for one part; a foundation's opening 90 s stands in for the whole. */
 const MEASURE_MAX_SEC = 90;
 
+/**
+ * Tempo match with octaves: a deck plays one, two or half a beat per master beat, whichever needs the
+ * least time-stretch. A 160 BPM vocal over an 80 BPM beat rides in double time at its natural speed
+ * (k = 2) instead of being slowed to half speed. `ratio` is the time-stretch factor (>1 slows).
+ */
+export function tempoMatch(deckBpm: number, masterBpm: number): { ratio: number; k: 0.5 | 1 | 2 } {
+  let best: { ratio: number; k: 0.5 | 1 | 2 } = { ratio: deckBpm / masterBpm, k: 1 };
+  for (const k of [0.5, 2] as const) {
+    const ratio = deckBpm / (masterBpm * k);
+    if (Math.abs(Math.log(ratio)) < Math.abs(Math.log(best.ratio))) best = { ratio, k };
+  }
+  return best;
+}
+
 export function stretchRatio(deck: EngineDeck, masterBpm: number): number {
-  return deck.analysis.bpm / masterBpm;
+  return tempoMatch(deck.analysis.bpm, masterBpm).ratio;
+}
+
+/** Deck beats per master beat for this deck at this master tempo (2 = the deck rides in double time). */
+export function beatsPerMasterBeat(deckBpm: number, masterBpm: number): number {
+  return tempoMatch(deckBpm, masterBpm).k;
 }
 
 function cacheKey(deck: EngineDeck, stem: StemKey, masterBpm: number): string {

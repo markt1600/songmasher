@@ -6,7 +6,7 @@ import { audioBufferToChannels, channelsToAudioBuffer } from "./audio/wav";
 import { firstOnsetOffset, stemLagSamples } from "./audio/align";
 import { guessFromName, readAudioTags } from "./audio/tags";
 import { decodeArrayBuffer, decodeFile, getAudioContext, toMono } from "./engine/context";
-import { Engine, type EngineDecks } from "./engine/engine";
+import { beatsPerMasterBeat, Engine, type EngineDecks } from "./engine/engine";
 import { runAnalysis, runEncodeMp3, runQuickStems, runSections, runVocalProfile } from "./workers";
 import { CLIP_LANES, emptyAutomation, type AutomationPoint, type Clip, type CuePoint, type DeckId, type DeckState, type DemucsVariant, type Foundation, type LoopRegion, type Project, type StemKey, type TransportOptions } from "./types";
 import { playWindow } from "./engine/engine";
@@ -1889,12 +1889,14 @@ export const useStore = create<Store>((set, get) => {
       if (!d.analysis) return;
       const lane = opts?.lane ?? 1;
       const startBeat = opts?.startBeat ?? laneEnd(s.project.clips, lane);
+      // `lengthBeats` arrives in the deck's own beats; on the timeline a double-time song covers half as many.
+      const k = beatsPerMasterBeat(d.analysis.bpm, s.project.masterBpm);
       const clip: Clip = {
         id: newId(),
         deckId,
         stem: opts?.stem ?? d.activeStem,
         srcBar,
-        lengthBeats,
+        lengthBeats: Math.max(0.25, Math.round((lengthBeats / k) * 4) / 4),
         startBeat,
         lane: Math.max(1, Math.min(CLIP_LANES, lane)),
         gain: 1,
