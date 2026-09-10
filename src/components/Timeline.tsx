@@ -253,6 +253,18 @@ export default function Timeline() {
                 <FadeControl label="In" value={one.fadeIn ?? 0} onChange={(v) => updateClip(one.id, { fadeIn: v })} />
                 <FadeControl label="Out" value={one.fadeOut ?? 0} onChange={(v) => updateClip(one.id, { fadeOut: v })} />
                 <EqControl value={one.eq ?? FLAT_EQ} onChange={(eq) => updateClip(one.id, { eq })} autoLow={autoEqCuts[one.id]} />
+                <div className="inline-flex items-center gap-1 rounded-[8px] inset px-1.5 h-[28px]" data-fx>
+                  <span className="label mr-0.5">FX</span>
+                  <span className="text-[10px] text-muted">Echo</span>
+                  {[0, 0.35, 0.7, 1].map((v) => (
+                    <button key={v} className={`btn btn-xs !px-1.5 ${(one.fx?.echo ?? 0) === v ? "text-accent-2 border-[#7c6cff]/60" : ""}`} onClick={() => updateClip(one.id, { fx: { ...one.fx, echo: v } })} title={v === 0 ? "No echo" : `Tempo-synced echo, ${Math.round(v * 100)}% wet`}>
+                      {v === 0 ? "off" : `${Math.round(v * 100)}%`}
+                    </button>
+                  ))}
+                  <button className={`btn btn-xs ${one.fx?.reverse ? "text-accent-2 border-[#7c6cff]/60" : ""}`} onClick={() => updateClip(one.id, { fx: { ...one.fx, reverse: !one.fx?.reverse } })} title="Play this clip backwards (a swell into a drop)">
+                    Reverse
+                  </button>
+                </div>
                 <div className="inline-flex items-center gap-0.5" title="Nudge the clip's start inside the source, in milliseconds, to land its first hit on the beat">
                   <button className="btn btn-xs" onClick={() => nudgeClip(one.id, -5)}>
                     −5
@@ -835,8 +847,15 @@ function ClipView({ clip, zoom, selected, selectedIds, solo, dimmed, snapBeat, l
           {clip.mode === "swap" ? " · swap" : ""}
           {clip.offsetMs ? ` · ${clip.offsetMs > 0 ? "+" : ""}${clip.offsetMs}ms` : ""}
         </span>
-        {((trimDb !== undefined && Math.abs(trimDb) >= 0.5) || (timingMs !== undefined && Math.abs(timingMs) >= 2) || autoLow !== undefined || (clip.eq && (clip.eq.low || clip.eq.mid || clip.eq.high))) && (
+        {((trimDb !== undefined && Math.abs(trimDb) >= 0.5) || (timingMs !== undefined && Math.abs(timingMs) >= 2) || autoLow !== undefined || (clip.eq && (clip.eq.low || clip.eq.mid || clip.eq.high)) || clip.fx?.echo || clip.fx?.reverse) && (
           <span className="ml-auto shrink-0 flex items-center gap-1">
+            {(clip.fx?.echo || clip.fx?.reverse) && (
+              <span className="font-mono tabular-nums text-[9.5px] px-1 rounded bg-black/25 text-black/80" title={`${clip.fx.echo ? `Echo ${Math.round(clip.fx.echo * 100)}%` : ""}${clip.fx.echo && clip.fx.reverse ? " · " : ""}${clip.fx.reverse ? "Reversed" : ""}`}>
+                {clip.fx.echo ? "echo" : ""}
+                {clip.fx.echo && clip.fx.reverse ? " " : ""}
+                {clip.fx.reverse ? "rev" : ""}
+              </span>
+            )}
             {(autoLow !== undefined || (clip.eq && (clip.eq.low || clip.eq.mid || clip.eq.high))) && (
               <span className="font-mono tabular-nums text-[9.5px] px-1 rounded bg-black/25 text-black/80" title={`${autoLow !== undefined ? `EQ mixing cut the lows by ${Math.abs(autoLow)} dB so the foundation keeps the bass. ` : ""}${clip.eq && (clip.eq.low || clip.eq.mid || clip.eq.high) ? `Your EQ: low ${clip.eq.low} · mid ${clip.eq.mid} · high ${clip.eq.high} dB` : ""}`}>
                 {autoLow !== undefined ? `low ${autoLow + (clip.eq?.low ?? 0)}` : `EQ ${clip.eq!.low}/${clip.eq!.mid}/${clip.eq!.high}`}

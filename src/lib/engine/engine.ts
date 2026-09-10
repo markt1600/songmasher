@@ -26,6 +26,10 @@ export interface PlayEvent {
   trim?: number;
   /** three-band EQ (dB) after manual and automatic settings are combined */
   eq?: Eq;
+  /** tempo-synced echo wet amount (0..1) */
+  echo?: number;
+  /** play the source region backwards (a swell into a drop) */
+  reverse?: boolean;
   fadeIn: number; // seconds
   fadeOut: number;
   clipId?: string;
@@ -182,6 +186,8 @@ export function buildEvents(project: Project, decks: EngineDecks): PlayEvent[] {
       fadeIn: Math.max(MIN_FADE, (clip.fadeIn ?? 0) * spb),
       fadeOut: Math.max(MIN_FADE, (clip.fadeOut ?? 0) * spb),
       clipId: clip.id,
+      ...(clip.fx?.echo ? { echo: Math.max(0, Math.min(1, clip.fx.echo)) } : {}),
+      ...(clip.fx?.reverse ? { reverse: true } : {}),
     });
   }
   return events;
@@ -511,7 +517,19 @@ export class Engine {
       const dur = Math.min(ev.durationSec - skip, to - Math.max(ev.startSec, from));
       if (dur <= 0.01 || offset >= buf.duration) continue;
       const src = ctx.createBufferSource();
-      src.buffer = buf;
+      if (ev.reverse) {
+        // Reversed swell: a short copy of the region, backwards, played from its start.
+        const sr = buf.sampleRate;
+        const a = Math.floor(offset * sr);
+        const b = Math.min(buf.length, Math.ceil((offset + dur) * sr));
+        const slice = ctx.createBuffer(buf.numberOfChannels, Math.max(1, b - a), sr);
+        for (let c = 0; c < buf.numberOfChannels; c++) {
+          const from = buf.getChannelData(c).subarray(a, b);
+          const to = slice.getChannelData(c);
+          for (let i = 0; i < from.length; i++) to[i] = from[from.length - 1 - i];
+        }
+        src.buffer = slice;
+      } else src.buffer = buf;
       // fade node (0..1 click-free envelope) -> level node (user gain, adjustable live)
       const g = ctx.createGain();
       const fi = Math.min(ev.fadeIn, dur / 2);
@@ -551,7 +569,29 @@ export class Engine {
       }
       tail.connect(level);
       level.connect(ev.clipId ? dest : lp);
-      src.start(when, offset, Math.min(dur, buf.duration - offset));
+      if (ev.echo && ev.clipId) {
+        // Tempo-synced echo: a dotted-eighth feedback delay with a darkening filter in the loop,
+        // mixed in at `echo`; the tail is allowed to ring on after the clip ends.
+        const delay = ctx.createDelay(2);
+        delay.delayTime.value = spb * 0.75;
+        const fb = ctx.createGain();
+        fb.gain.value = 0.42;
+        const dark = ctx.createBiquadFilter();
+        dark.type = "lowpass";
+        dark.frequency.value = 3200;
+        const wet = ctx.createGain();
+        wet.gain.value = ev.echo * 0.9;
+        level.connect(delay);
+        delay.connect(dark);
+        dark.connect(fb);
+        fb.connect(delay);
+        dark.connect(wet);
+        wet.connect(dest);
+        disposables.push(delay, fb, dark, wet);
+        endCtx = Math.max(endCtx, when + dur + 2.5);
+      }
+      if (ev.reverse) src.start(when, 0, dur);
+      else src.start(when, offset, Math.min(dur, buf.duration - offset));
       nodes.push(src);
       disposables.push(g, level);
       const key = ev.clipId ?? "foundation";

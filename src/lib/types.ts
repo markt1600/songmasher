@@ -57,6 +57,13 @@ export interface Clip {
   offsetMs?: number;
   /** three-band EQ in dB (low shelf 220 Hz, mid peak 1.2 kHz, high shelf 5 kHz); 0 = flat, -24 = killed */
   eq?: Eq;
+  /** effects: a tempo-synced echo (wet amount 0..1, dotted-eighth feedback delay) and reversed playback */
+  fx?: ClipFx;
+}
+
+export interface ClipFx {
+  echo?: number;
+  reverse?: boolean;
 }
 
 export interface Eq {
