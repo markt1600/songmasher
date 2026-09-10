@@ -59,6 +59,8 @@ export interface Clip {
   eq?: Eq;
   /** effects: a tempo-synced echo (wet amount 0..1, dotted-eighth feedback delay) and reversed playback */
   fx?: ClipFx;
+  /** pitch shift for this clip alone (absolute semitones); undefined = the deck's setting */
+  semitones?: number;
 }
 
 export interface ClipFx {

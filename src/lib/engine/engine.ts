@@ -28,6 +28,12 @@ export interface PlayEvent {
   eq?: Eq;
   /** tempo-synced echo wet amount (0..1) */
   echo?: number;
+  /** pitch this event plays at (absolute semitones) */
+  semitones: number;
+  /** source-second window this event's buffer covers (whole song when absent) */
+  region?: [number, number];
+  /** processed-buffer seconds the cached buffer starts at (region start × ratio); 0 for whole-song buffers */
+  bufferBase: number;
   /** play the source region backwards (a swell into a drop) */
   reverse?: boolean;
   fadeIn: number; // seconds
@@ -78,11 +84,29 @@ export function beatsPerMasterBeat(deckBpm: number, masterBpm: number): number {
   return tempoMatch(deckBpm, masterBpm).k;
 }
 
-function cacheKey(deck: EngineDeck, stem: StemKey, masterBpm: number): string {
+/** Seconds of source audio rendered around a clip's region, so time-stretch and timing nudges have context. */
+const REGION_PAD = 1.2;
+
+/**
+ * Cache key for a processed buffer. Clips render only their own region of the song (`region`, in source
+ * seconds, snapped to 0.5 s) at their own pitch, so a short tease at four pitches costs four short
+ * renders rather than four renders of the whole song.
+ */
+function cacheKey(deck: EngineDeck, stem: StemKey, masterBpm: number, semitones = deck.semitones, region?: [number, number]): string {
   const ratio = stretchRatio(deck, masterBpm);
-  const needs = Math.abs(ratio - 1) > 0.0005 || deck.semitones !== 0;
-  const formant = stem === "vocals" && deck.semitones !== 0 ? ":f" : "";
-  return needs ? `${deck.id}:${stem}:${ratio.toFixed(5)}:${deck.semitones}${formant}` : `${deck.id}:${stem}:raw`;
+  const needs = Math.abs(ratio - 1) > 0.0005 || semitones !== 0;
+  if (!needs) return `${deck.id}:${stem}:raw`;
+  const formant = stem === "vocals" && semitones !== 0 ? ":f" : "";
+  const reg = region ? `:r${region[0].toFixed(1)}-${region[1].toFixed(1)}` : "";
+  return `${deck.id}:${stem}:${ratio.toFixed(5)}:${semitones}${formant}${reg}`;
+}
+
+/** The source-second window a clip needs, padded and snapped so nearby clips share renders. */
+function clipRegion(srcT: number, srcDur: number, spb: number): [number, number] {
+  const pad = REGION_PAD + spb;
+  const a = Math.max(0, Math.floor((srcT - pad) * 2) / 2);
+  const b = Math.ceil((srcT + srcDur + pad) * 2) / 2;
+  return [a, b];
 }
 
 /** Beat ranges where the foundation is audible: [0, end) minus every swap clip. */
@@ -157,6 +181,8 @@ export function buildEvents(project: Project, decks: EngineDecks): PlayEvent[] {
         deckId: f.deckId,
         stem: f.stem,
         key: cacheKey(deck, f.stem, project.masterBpm),
+        semitones: deck.semitones,
+        bufferBase: 0,
         startSec: a * spb,
         durationSec: duration,
         bufferOffsetSec: srcT * ratio + a * spb,
@@ -175,10 +201,16 @@ export function buildEvents(project: Project, decks: EngineDecks): PlayEvent[] {
     const remaining = (deck.analysis.duration - srcT) * ratio;
     const duration = Math.max(0, Math.min(clip.lengthBeats * spb, remaining, (totalBeats - clip.startBeat) * spb));
     if (duration <= 0) continue;
+    const semitones = clip.semitones ?? deck.semitones;
+    const region = clipRegion(srcT, duration / ratio, spb);
+    const key = cacheKey(deck, clip.stem, project.masterBpm, semitones, region);
     events.push({
       deckId: clip.deckId,
       stem: clip.stem,
-      key: cacheKey(deck, clip.stem, project.masterBpm),
+      key,
+      semitones,
+      region: key.endsWith(":raw") ? undefined : region,
+      bufferBase: key.endsWith(":raw") ? 0 : region[0] * ratio,
       startSec: clip.startBeat * spb,
       durationSec: duration,
       bufferOffsetSec: srcT * ratio,
@@ -272,9 +304,15 @@ export class Engine {
     }
     const ratio = stretchRatio(deck, masterBpm);
     const p = (async () => {
-      const chans = audioBufferToChannels(src);
-      const preserveFormants = ev.stem === "vocals" && deck.semitones !== 0;
-      const out = await runStretch(chans, src.sampleRate, ratio, deck.semitones, (v) => onProgress?.(`Syncing ${deck.id} · ${ev.stem}`, v), preserveFormants);
+      let chans = audioBufferToChannels(src);
+      if (ev.region) {
+        // only the clip's window of the song, so short parts (and per-clip pitches) render in a blink
+        const s0 = Math.floor(ev.region[0] * src.sampleRate);
+        const s1 = Math.min(src.length, Math.ceil(ev.region[1] * src.sampleRate));
+        chans = chans.map((c) => c.slice(s0, Math.max(s0 + 1, s1)));
+      }
+      const preserveFormants = ev.stem === "vocals" && ev.semitones !== 0;
+      const out = await runStretch(chans, src.sampleRate, ratio, ev.semitones, (v) => onProgress?.(`Syncing ${deck.id} · ${ev.stem}`, v), preserveFormants);
       const buf = channelsToAudioBuffer(this.ctx, out, src.sampleRate);
       this.cache.set(ev.key, buf);
       return buf;
@@ -513,7 +551,7 @@ export class Engine {
       if (evEnd <= from || ev.startSec >= to) continue;
       const skip = Math.max(0, from - ev.startSec);
       const when = at + Math.max(0, ev.startSec - from);
-      const offset = ev.bufferOffsetSec + skip;
+      const offset = ev.bufferOffsetSec - ev.bufferBase + skip;
       const dur = Math.min(ev.durationSec - skip, to - Math.max(ev.startSec, from));
       if (dur <= 0.01 || offset >= buf.duration) continue;
       const src = ctx.createBufferSource();

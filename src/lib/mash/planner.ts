@@ -40,7 +40,7 @@ export interface PlanConstraints {
   /** false: no tease before the first and last hook (drums out, a stutter of the hook's first beat, a gap on the last beat) */
   tease?: boolean;
   /** how the vocal is teased: "echo" = the hook's opening line echoes out (default when its phrases are known), "stutter" = the first beat stammers in */
-  teaseStyle?: "echo" | "stutter";
+  teaseStyle?: "echo" | "stutter" | "riser";
   /** "both": the foundation song's own vocal takes turns with the other song's (duet templates) */
   vocals?: "one" | "both";
 }
@@ -88,6 +88,8 @@ export interface PlannedClip {
   gain?: number;
   eq?: { low: number; mid: number; high: number };
   fx?: { echo?: number; reverse?: boolean };
+  /** pitch for this part alone (absolute semitones); undefined = the plan's shift */
+  semitones?: number;
 }
 
 export interface PlanCandidate {
@@ -653,7 +655,14 @@ export function planMashup(songs: [PlannerSong, PlannerSong], constraints: PlanC
                 const line = V.vocal?.phrases.find((ph) => Math.abs(ph.startBeat - hookSrcBeat) <= 0.6);
                 const lineBeats = line ? Math.min(4, Math.max(1, line.endBeat - line.startBeat)) : 0;
                 const style = constraints.teaseStyle ?? (lineBeats >= 1 ? "echo" : "stutter");
-                if (style === "echo" && lineBeats >= 1) {
+                if (style === "riser") {
+                  // Pitch riser: the opening word repeats climbing +0, +2, +4, +5 semitones over the last two beats,
+                  // the last one echoing into the gap (formants preserved, so the voice stays a voice).
+                  const steps = [0, 2, 4, 5];
+                  for (let k = 0; k < 4; k++) {
+                    clips.push({ deck: V.deck, stem: "vocals", srcBar: hookSrcBeat / 4, lengthBeats: 0.5, startBeat: hookBeat - 2 + k * 0.5, lane: 2, mode: "layer", label: k === 0 ? "Tease" : "Tease again", fit: best.fit, slotBars: 0, fadeIn: 0.05, fadeOut: 0.12, gain: 0.7 + k * 0.1, eq: { low: -24, mid: 0, high: 3 }, semitones: shift + steps[k], ...(k === 3 ? { fx: { echo: 0.5 } } : {}) });
+                  }
+                } else if (style === "echo" && lineBeats >= 1) {
                   // Echo-out tease: the opening line plays once, thinned and echoing, ending before the gap so the
                   // delay tail rings into the silence; then the real hook lands on the downbeat.
                   const tl = lineBeats * octave;
@@ -725,7 +734,7 @@ export function planMashup(songs: [PlannerSong, PlannerSong], constraints: PlanC
           breakdown: { harmony, phrases, energy: energyFit, stretch: 1 - stretchPenalty, phrasing: n > 0 ? phrasingSum / n : 0 },
           automation: automation.filter.length ? automation : undefined,
           vocalOctave: octave,
-          description: (octave !== 1 ? `${V.name} rides in ${octave === 0.5 ? "double" : "half"} time at its own speed (${Math.round(va.bpm)} over ${Math.round(fa.bpm)} BPM); ` : "") + (feature ? `Opens with ${feature.label ?? "the signature intro"} of ${feature.deck === F.deck ? F.name : V.name}; then ` : "") + describeCandidate(tid, F, V, fStart, shift, harmony) + (automation.filter.length ? (clips.some((c) => c.label.startsWith("Build")) ? "; the singer's own lead-in and a riser build into each hook" : "; a riser builds into each hook") + (clips.some((c) => c.label === "Tease" || c.label === "Drums out" || c.label === "Swell") || automation.level.some((pt) => pt.value < 0.2) ? `, with ${clips.some((c) => c.label === "Tease" && c.fx?.echo) ? "the opening line echoing out" : clips.some((c) => c.label === "Tease") ? "a stutter" : "a tease"}${clips.some((c) => c.label === "Swell") ? ", a reverse swell" : ""}${clips.some((c) => c.label === "Anticipation") ? ", the hook's chords creeping in" : ""} and a gap before the drop` : "") : ""),
+          description: (octave !== 1 ? `${V.name} rides in ${octave === 0.5 ? "double" : "half"} time at its own speed (${Math.round(va.bpm)} over ${Math.round(fa.bpm)} BPM); ` : "") + (feature ? `Opens with ${feature.label ?? "the signature intro"} of ${feature.deck === F.deck ? F.name : V.name}; then ` : "") + describeCandidate(tid, F, V, fStart, shift, harmony) + (automation.filter.length ? (clips.some((c) => c.label.startsWith("Build")) ? "; the singer's own lead-in and a riser build into each hook" : "; a riser builds into each hook") + (clips.some((c) => c.label === "Tease" || c.label === "Drums out" || c.label === "Swell") || automation.level.some((pt) => pt.value < 0.2) ? `, with ${clips.some((c) => c.label === "Tease" && c.semitones !== undefined) ? "the opening word climbing in pitch" : clips.some((c) => c.label === "Tease" && c.fx?.echo) ? "the opening line echoing out" : clips.some((c) => c.label === "Tease") ? "a stutter" : "a tease"}${clips.some((c) => c.label === "Swell") ? ", a reverse swell" : ""}${clips.some((c) => c.label === "Anticipation") ? ", the hook's chords creeping in" : ""} and a gap before the drop` : "") : ""),
         });
       }
     }

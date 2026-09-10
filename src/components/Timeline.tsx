@@ -253,6 +253,18 @@ export default function Timeline() {
                 <FadeControl label="In" value={one.fadeIn ?? 0} onChange={(v) => updateClip(one.id, { fadeIn: v })} />
                 <FadeControl label="Out" value={one.fadeOut ?? 0} onChange={(v) => updateClip(one.id, { fadeOut: v })} />
                 <EqControl value={one.eq ?? FLAT_EQ} onChange={(eq) => updateClip(one.id, { eq })} autoLow={autoEqCuts[one.id]} />
+                <div className="inline-flex items-center gap-0.5 rounded-[8px] inset px-1.5 h-[28px]" data-pitch title="Pitch shift for this clip alone, in semitones (the deck's setting when unset). Formants are preserved on vocal stems.">
+                  <span className="label mr-0.5">Pitch</span>
+                  <button className="btn btn-xs !px-1" onClick={() => updateClip(one.id, { semitones: (one.semitones ?? decks[one.deckId].semitones) - 1 })} aria-label="Pitch down">
+                    <Icon name="minus" size={9} />
+                  </button>
+                  <button className={`font-mono tabular-nums text-[10.5px] w-[34px] text-center ${one.semitones !== undefined ? "text-accent-2" : "text-text-2"}`} onClick={() => updateClip(one.id, { semitones: undefined })} title="Click to follow the deck's pitch again">
+                    {(() => { const v = one.semitones ?? decks[one.deckId].semitones; return `${v > 0 ? "+" : ""}${v} st`; })()}
+                  </button>
+                  <button className="btn btn-xs !px-1" onClick={() => updateClip(one.id, { semitones: (one.semitones ?? decks[one.deckId].semitones) + 1 })} aria-label="Pitch up">
+                    <Icon name="plus" size={9} />
+                  </button>
+                </div>
                 <div className="inline-flex items-center gap-1 rounded-[8px] inset px-1.5 h-[28px]" data-fx>
                   <span className="label mr-0.5">FX</span>
                   <span className="text-[10px] text-muted">Echo</span>
@@ -847,8 +859,14 @@ function ClipView({ clip, zoom, selected, selectedIds, solo, dimmed, snapBeat, l
           {clip.mode === "swap" ? " · swap" : ""}
           {clip.offsetMs ? ` · ${clip.offsetMs > 0 ? "+" : ""}${clip.offsetMs}ms` : ""}
         </span>
-        {((trimDb !== undefined && Math.abs(trimDb) >= 0.5) || (timingMs !== undefined && Math.abs(timingMs) >= 2) || autoLow !== undefined || (clip.eq && (clip.eq.low || clip.eq.mid || clip.eq.high)) || clip.fx?.echo || clip.fx?.reverse) && (
+        {((trimDb !== undefined && Math.abs(trimDb) >= 0.5) || (timingMs !== undefined && Math.abs(timingMs) >= 2) || autoLow !== undefined || (clip.eq && (clip.eq.low || clip.eq.mid || clip.eq.high)) || clip.fx?.echo || clip.fx?.reverse || clip.semitones !== undefined) && (
           <span className="ml-auto shrink-0 flex items-center gap-1">
+            {clip.semitones !== undefined && (
+              <span className="font-mono tabular-nums text-[9.5px] px-1 rounded bg-black/25 text-black/80" title="This clip's own pitch shift">
+                {clip.semitones > 0 ? "+" : ""}
+                {clip.semitones} st
+              </span>
+            )}
             {(clip.fx?.echo || clip.fx?.reverse) && (
               <span className="font-mono tabular-nums text-[9.5px] px-1 rounded bg-black/25 text-black/80" title={`${clip.fx.echo ? `Echo ${Math.round(clip.fx.echo * 100)}%` : ""}${clip.fx.echo && clip.fx.reverse ? " · " : ""}${clip.fx.reverse ? "Reversed" : ""}`}>
                 {clip.fx.echo ? "echo" : ""}

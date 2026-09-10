@@ -8,7 +8,7 @@ import { Icon } from "./ui";
 
 const KIND_ICON: Record<string, string> = { foundation: "anchor", tempo: "loop", key: "music", hook: "scissors", verse: "scissors", beat: "anchor", info: "check" };
 /** Every constraint explicitly cleared: the planner falls back to its own choices. */
-const RESET: PlanConstraints = { foundation: undefined, lengthBars: undefined, vocalEntryBar: undefined, hookBars: undefined, energy: undefined, maxShift: undefined, template: undefined, vocals: undefined, mustInclude: undefined, knowledge: undefined, buildups: undefined, tease: undefined };
+const RESET: PlanConstraints = { foundation: undefined, lengthBars: undefined, vocalEntryBar: undefined, hookBars: undefined, energy: undefined, maxShift: undefined, template: undefined, vocals: undefined, mustInclude: undefined, knowledge: undefined, buildups: undefined, tease: undefined, teaseStyle: undefined };
 
 /** An adjust chip that stays lit while its constraint is active; clicking again clears it. */
 function Chip({ on, title, onClick, children }: { on: boolean; title?: string; onClick: () => void; children: ReactNode }) {
@@ -315,6 +315,15 @@ export default function Advisor() {
               >
                 Tease the drop
               </Chip>
+            )}
+            {constraints.buildups !== false && constraints.tease !== false && (
+              <div className="seg" title="How the vocal is teased before the drop">
+                {(["echo", "riser", "stutter"] as const).map((k) => (
+                  <button key={k} data-active={(constraints.teaseStyle ?? "echo") === k} style={{ height: 22, fontSize: 11, padding: "0 7px" }} onClick={() => quick({ teaseStyle: k }, k === "echo" ? "echo the first line before the drop" : k === "riser" ? "tease the drop with a pitch riser on the opening word" : "stutter the vocal before the drop")}>
+                    {k === "echo" ? "Echo" : k === "riser" ? "Riser" : "Stutter"}
+                  </button>
+                ))}
+              </div>
             )}
             {config.ai && (
               <Chip

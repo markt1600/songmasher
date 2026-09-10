@@ -60,7 +60,7 @@ const ConstraintsSchema = z.object({
   /** false = no tease before the drop (drums out, stutter, gap); null = unchanged */
   tease: z.boolean().nullable(),
   /** how the vocal is teased before the drop: "echo" (its opening line echoes out) or "stutter" (its first beat stammers in); null = automatic */
-  teaseStyle: z.enum(["echo", "stutter"]).nullable(),
+  teaseStyle: z.enum(["echo", "stutter", "riser"]).nullable(),
   /** a signature moment the arrangement must open with: that deck's full mix from srcBar for `bars` */
   mustInclude: z.object({ deck: Deck, srcBar: z.number().int().min(0), bars: z.number().int().min(2).max(16), label: z.string().max(300) }).nullable(),
 });
@@ -116,7 +116,7 @@ Respond with:
   "swap the roles" -> foundation set to the other deck; "use both singers" / "let them trade lines" -> vocals "both";
   "no build-up" / "straight into the hook" -> buildups false; "more build-up" / "bigger drop" -> buildups true;
   "no tease" -> tease false; "tease the drop" -> tease true; "echo the first line" -> teaseStyle "echo"; "stutter the
-  vocal" -> teaseStyle "stutter" (the default echoes the hook's opening line when its phrases are known, plus a reverse
+  vocal" -> teaseStyle "stutter"; "pitch riser" / "climbing" -> teaseStyle "riser" (the default echoes the hook's opening line when its phrases are known, plus a reverse
   swell into the downbeat and, with stems, the hook's own chords creeping in under the lead);
   "only one vocal" -> vocals "one"). Otherwise null. Unchanged fields null.
 - summary: 2-3 sentences a producer would say about the chosen plan: what sits under what, where the hook lands,
