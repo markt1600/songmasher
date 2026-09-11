@@ -21,7 +21,7 @@ const SongSchema = z.object({
   durationSec: z.number(),
   totalBars: z.number(),
   stems: z.array(z.string()),
-  sections: z.array(z.object({ label: z.string(), startBar: z.number(), endBar: z.number() })).max(80).optional(),
+  sections: z.array(z.object({ label: z.string(), startBar: z.number(), endBar: z.number() })).max(200).optional(),
   vocal: z
     .object({
       phrases: z.number(),
@@ -43,7 +43,9 @@ const CandidateSchema = z.object({
   semitones: z.number(),
   masterBpm: z.number(),
   lengthBars: z.number(),
-  clips: z.array(z.object({ label: z.string(), deck: Deck, srcBar: z.number(), lengthBars: z.number(), startBar: z.number(), stem: StemEnum, mode: z.enum(["layer", "swap"]), fit: z.number() })).max(12),
+  clips: z.array(z.object({ label: z.string(), deck: Deck, srcBar: z.number(), lengthBars: z.number(), startBar: z.number(), stem: StemEnum, mode: z.enum(["layer", "swap"]), fit: z.number() })).max(48),
+  /** the effect parts (teases, swells, drum drops) the planner adds around the hooks, summarised */
+  effects: z.string().max(200).optional(),
 });
 
 const ConstraintsSchema = z.object({
@@ -82,11 +84,16 @@ const ResponseSchema = z.object({
     )
     .max(2),
   tips: z.array(z.string()).max(5),
-  clipLabels: z.array(z.string()).max(12),
+  clipLabels: z.array(z.string()).max(48),
   stemAdvice: z.array(z.object({ deck: Deck, variant: z.enum(["htdemucs", "htdemucs_ft", "htdemucs_6s"]), reason: z.string() })),
 });
 
 const HistorySchema = z.array(z.object({ instruction: z.string().max(2000), summary: z.string().max(4000) })).max(8);
+const BodySchema = z.object({
+  songs: z.array(SongSchema).min(2).max(2),
+  candidates: z.array(CandidateSchema).min(1).max(8),
+  history: HistorySchema.optional(),
+});
 
 const SYSTEM = `You are the producer's ear inside SongMasher, a two-song mashup tool. A deterministic planner has already
 listened to both songs numerically: it knows the tempo, key, beat grid, song sections, where the singer actually
@@ -133,7 +140,8 @@ Respond with:
   words, e.g. "the bass riff intro") } and say
   so in the summary ("Opens with the bass riff of Ice Ice Baby"). Otherwise mustInclude null. When the request
   says knowledge is off, return knowledge [] and mustInclude null.
-- clipLabels: a short evocative label per clip of the chosen candidate, in order (same count as its clips), else [].
+- clipLabels: a short evocative label per clip of the chosen candidate, in order (same count as its clips; the
+  "effects" line is not a clip), else [].
 - stemAdvice: songs that still lack a "vocals" stem but are used for their vocal, with the Demucs variant to run
   ("htdemucs" default, "htdemucs_ft" when the vocal is the star, "htdemucs_6s" for guitar/piano). Empty otherwise.`;
 
@@ -147,11 +155,16 @@ export async function POST(request: Request): Promise<Response> {
   try {
     const body = await request.json();
     if (body.useKnowledge === false) useKnowledge = false;
-    songs = z.array(SongSchema).min(2).max(2).parse(body.songs);
-    candidates = z.array(CandidateSchema).min(1).max(8).parse(body.candidates);
+    const parsed = BodySchema.parse(body);
+    songs = parsed.songs;
+    candidates = parsed.candidates;
     instruction = typeof body.instruction === "string" ? body.instruction.slice(0, 2000) : undefined;
-    if (body.history) history = HistorySchema.parse(body.history);
-  } catch {
+    history = parsed.history ?? [];
+  } catch (err) {
+    if (err instanceof z.ZodError) {
+      const issues = err.issues.slice(0, 3).map((i) => `${i.path.join(".") || "body"}: ${i.message}`).join("; ");
+      return Response.json({ error: `The advisor request did not match the server (${issues}). Reload the page so the app and server agree.` }, { status: 400 });
+    }
     return Response.json({ error: "Two analysed songs and at least one candidate are required" }, { status: 400 });
   }
   const client = new Anthropic();

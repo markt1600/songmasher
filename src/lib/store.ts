@@ -12,7 +12,7 @@ import { CLIP_LANES, MAX_CLIP_LANES, laneCountOf, emptyAutomation, type Automati
 import { playWindow } from "./engine/engine";
 import { computeSuggestions, type Suggestion, type SuggestionAction } from "./advisor";
 import { describeSong, sanitizePlan } from "./planRules";
-import { planMashup, type PlanCandidate, type PlanConstraints, type PlannerSong } from "./mash/planner";
+import { isEffectClip, planMashup, type PlanCandidate, type PlanConstraints, type PlannerSong } from "./mash/planner";
 import * as lib from "./library";
 import type { LibraryMix, LibraryProject, LibrarySong } from "./library";
 import type { Section } from "./audio/sections";
@@ -1274,8 +1274,23 @@ export const useStore = create<Store>((set, get) => {
       semitones: c.semitones,
       masterBpm: c.masterBpm,
       lengthBars: c.lengthBars,
-      clips: c.clips.map((k) => ({ label: k.label, deck: k.deck, srcBar: Math.round(k.srcBar * 4) / 4, lengthBars: k.slotBars, startBar: Math.round(k.startBeat) / 4, stem: k.stem, mode: k.mode, fit: r2(k.fit) })),
+      // musical parts only: the effect parts (teases, swells, drum drops) are summarised so the list stays short
+      clips: c.clips.filter((k) => !isEffectClip(k)).map((k) => ({ label: k.label, deck: k.deck, srcBar: Math.round(k.srcBar * 4) / 4, lengthBars: k.slotBars, startBar: Math.round(k.startBeat) / 4, stem: k.stem, mode: k.mode, fit: r2(k.fit) })),
+      ...(c.clips.some(isEffectClip) ? { effects: effectSummary(c.clips) } : {}),
     }));
+  const effectSummary = (clips: PlanCandidate["clips"]) => {
+    const n = new Map<string, number>();
+    for (const k of clips) if (isEffectClip(k)) n.set(k.label, (n.get(k.label) ?? 0) + 1);
+    return [...n].map(([l, c]) => (c > 1 ? `${l} ×${c}` : l)).join(", ").slice(0, 200);
+  };
+  /** Claude labels the musical parts in order; spread those back over the full clip list (effect parts keep their names). */
+  const spreadLabels = (c: PlanCandidate, labels: string[]) => {
+    const parts = c.clips.map((k, i) => (isEffectClip(k) ? -1 : i)).filter((i) => i >= 0);
+    if (labels.length !== parts.length) return [];
+    const out = c.clips.map((k) => k.label);
+    parts.forEach((i, j) => (out[i] = labels[j]));
+    return out;
+  };
   const r2 = (v: number) => Math.round(v * 100) / 100;
 
   const consultClaude = async (instruction?: string) => {
@@ -1301,7 +1316,7 @@ export const useStore = create<Store>((set, get) => {
     }
     const chosen = cands.find((c) => c.id === res.choice) ?? cands[0];
     if (!chosen) throw new Error("The planner found no workable arrangement");
-    const notes: ClaudeNotes = { summary: res.summary, tips: res.tips, clipLabels: res.clipLabels ?? [], stemAdvice: res.stemAdvice ?? [], knowledge: res.knowledge ?? [], choice: chosen.id };
+    const notes: ClaudeNotes = { summary: res.summary, tips: res.tips, clipLabels: spreadLabels(chosen, res.clipLabels ?? []), stemAdvice: res.stemAdvice ?? [], knowledge: res.knowledge ?? [], choice: chosen.id };
     const plan = candidateToPlan(chosen, notes.clipLabels.length === chosen.clips.length ? notes.clipLabels : undefined);
     plan.summary = res.summary;
     plan.tips = res.tips;

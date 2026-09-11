@@ -92,6 +92,10 @@ export interface PlannedClip {
   semitones?: number;
 }
 
+/** Effect parts the planner adds around the hooks (teases, swells, drum drops); the musical parts are everything else. */
+export const EFFECT_LABELS = new Set(["Drums out", "Tease", "Tease again", "Swell", "Anticipation"]);
+export const isEffectClip = (c: { label: string }) => EFFECT_LABELS.has(c.label);
+
 export interface PlanCandidate {
   id: string;
   template: TemplateId;

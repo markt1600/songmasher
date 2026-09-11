@@ -217,7 +217,7 @@ export default function Advisor() {
                 </tr>
                 {selected.clips.map((k, i) => (
                   <tr key={i} className="border-t border-white/8">
-                    <td className="pr-3 py-1 font-mono">{Math.floor(k.startBeat / 4) + 1}{k.startBeat % 4 !== 0 ? ` (${((k.startBeat % 4) + 4) % 4 - 4} beat pickup)` : ""}</td>
+                    <td className="pr-3 py-1 font-mono">{Math.floor(k.startBeat / 4) + 1}{k.startBeat % 4 !== 0 ? ` (${Math.round((((k.startBeat % 4) + 4) % 4 - 4) * 100) / 100} beat pickup)` : ""}</td>
                     <td className="pr-3 py-1" style={{ color: DECK_COLORS[k.deck].main }}>
                       {k.deck} · {claudeNotes?.choice === selected.id && claudeNotes.clipLabels[i] ? claudeNotes.clipLabels[i] : k.label}
                     </td>
